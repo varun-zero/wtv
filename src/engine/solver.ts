@@ -35,6 +35,7 @@ export interface ScenarioFlight {
     slant_m: number;
   } | null;
   waypoints: Waypoint[];
+  notes?: string;
 }
 
 export interface CandidatePoint {
@@ -605,5 +606,120 @@ export function runGeolocationInversion(params: {
       refinedEvaluations: candidates.length * 16,
       distinctBasins: basins.length,
     },
+  };
+}
+
+export type FlightSortField = 'callsign' | 'speed' | 'alt';
+export type FlightSortDirection = 'asc' | 'desc';
+
+export function sortFlights(
+  flights: ScenarioFlight[],
+  field: FlightSortField | null,
+  direction: FlightSortDirection
+): ScenarioFlight[] {
+  if (!field) return [...flights];
+  const dir = direction === 'asc' ? 1 : -1;
+
+  return [...flights].sort((a, b) => {
+    let cmp = 0;
+    if (field === 'callsign') {
+      cmp = (a.callsign || '').localeCompare(b.callsign || '', undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    } else if (field === 'speed') {
+      cmp = (a.speed_ms || 0) - (b.speed_ms || 0);
+    } else if (field === 'alt') {
+      cmp = (a.alt_m || 0) - (b.alt_m || 0);
+    }
+
+    if (cmp === 0) {
+      cmp = (a.callsign || '').localeCompare(b.callsign || '', undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    return cmp * dir;
+  });
+}
+
+export interface Trajectory3dPoint {
+  lat: number;
+  lon: number;
+  alt_m: number;
+  time_s: number;
+  elevatedLat: number;
+  elevatedLon: number;
+  horizDistM: number;
+  slantDist3dM: number;
+  elevationAngleDeg: number;
+}
+
+export interface Estimated3dTrajectory {
+  flightId: string;
+  callsign: string;
+  aircraft: string;
+  points: Trajectory3dPoint[];
+  minSlant3dM: number;
+  maxElevationDeg: number;
+  cpaPoint: Trajectory3dPoint;
+}
+
+export function computeEstimated3dTrajectory(
+  flight: ScenarioFlight,
+  refPoint: { lat: number; lon: number; alt_m: number }
+): Estimated3dTrajectory | null {
+  const wps = ensureFlightWaypoints(flight);
+  if (wps.length < 2) return null;
+
+  const points: Trajectory3dPoint[] = wps.map((wp) => {
+    const horizDistM = greatCircleDistance(
+      refPoint.lat,
+      refPoint.lon,
+      wp.lat,
+      wp.lon
+    );
+    const dAlt = Math.max(0, wp.alt_m - (refPoint.alt_m || 0));
+    const slantDist3dM = Math.hypot(horizDistM, dAlt);
+    const elevationAngleDeg =
+      (Math.atan2(dAlt, Math.max(1.0, horizDistM)) * 180.0) / Math.PI;
+
+    // Isometric 3D vertical extrusion offset scaled by altitude above ground
+    const altScale = wp.alt_m / 1500.0;
+    const elevatedLat = wp.lat + altScale * 0.016;
+    const elevatedLon = normalizeLon(wp.lon - altScale * 0.011);
+
+    return {
+      lat: wp.lat,
+      lon: wp.lon,
+      alt_m: wp.alt_m,
+      time_s: wp.t,
+      elevatedLat,
+      elevatedLon,
+      horizDistM,
+      slantDist3dM,
+      elevationAngleDeg,
+    };
+  });
+
+  let cpaPoint = points[0];
+  let maxElevationDeg = points[0].elevationAngleDeg;
+  for (const pt of points) {
+    if (pt.slantDist3dM < cpaPoint.slantDist3dM) {
+      cpaPoint = pt;
+    }
+    if (pt.elevationAngleDeg > maxElevationDeg) {
+      maxElevationDeg = pt.elevationAngleDeg;
+    }
+  }
+
+  return {
+    flightId: flight.id,
+    callsign: flight.callsign,
+    aircraft: flight.aircraft,
+    points,
+    minSlant3dM: cpaPoint.slantDist3dM,
+    maxElevationDeg,
+    cpaPoint,
   };
 }

@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
 
 @layer base {
   :root {
@@ -21,6 +22,48 @@
 .tabular-nums {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
+}
+
+.leaflet-container {
+  background: #05080f !important;
+  font-family: var(--font-mono) !important;
+}
+
+.leaflet-container img,
+.leaflet-container img.leaflet-tile {
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.osm-dark-tiles .leaflet-tile-pane {
+  filter: invert(100%) hue-rotate(180deg) brightness(92%) contrast(90%);
+}
+
+.leaflet-control-attribution {
+  background: rgba(7, 9, 14, 0.85) !important;
+  color: #64748b !important;
+  font-size: 10px !important;
+  border-top: 1px solid rgba(51, 65, 85, 0.4);
+  border-left: 1px solid rgba(51, 65, 85, 0.4);
+}
+
+.leaflet-control-attribution a {
+  color: #38bdf8 !important;
+}
+
+.leaflet-tooltip.skyprint-tooltip {
+  background: rgba(7, 10, 18, 0.92);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  color: #e2e8f0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.leaflet-tooltip.skyprint-tooltip::before {
+  display: none;
 }
 
 ::-webkit-scrollbar {

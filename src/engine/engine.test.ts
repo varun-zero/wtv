@@ -34,8 +34,10 @@ import {
 } from './dsp';
 import {
   clusterCandidatesIntoBasins,
+  computeEstimated3dTrajectory,
   isBpfCompatible,
   runGeolocationInversion,
+  sortFlights,
 } from './solver';
 
 test('WGS84 ECEF <-> LLH round-trip across equatorial, polar, and southern latitudes', () => {
@@ -280,3 +282,111 @@ test('Geolocation solver handles crossing fix, parallel ambiguity, and high-pass
   });
   assert.equal(parallelRes.status, 'ambiguous');
 });
+
+test('Flight Tracks column-based sorting by callsign, speed, and altitude', () => {
+  const sampleFlights = [
+    {
+      id: 'F1',
+      callsign: 'N10SP',
+      aircraft: 'C172',
+      aircraft_name: 'Cessna 172',
+      heading_deg: 90,
+      speed_ms: 115,
+      speed_kts: 223,
+      alt_m: 1400,
+      bpf_nominal_hz: 85,
+      is_target: true,
+      cpa: { lat: 37.4, lon: -122.3, time_s: 20, slant_m: 1400 },
+      waypoints: [],
+    },
+    {
+      id: 'F2',
+      callsign: 'N2SP',
+      aircraft: 'SR22',
+      aircraft_name: 'Cirrus SR22',
+      heading_deg: 180,
+      speed_ms: 85,
+      speed_kts: 165,
+      alt_m: 2400,
+      bpf_nominal_hz: 115,
+      is_target: true,
+      cpa: { lat: 37.4, lon: -122.3, time_s: 30, slant_m: 2400 },
+      waypoints: [],
+    },
+    {
+      id: 'F3',
+      callsign: 'AAL404',
+      aircraft: 'C208',
+      aircraft_name: 'Caravan',
+      heading_deg: 270,
+      speed_ms: 140,
+      speed_kts: 272,
+      alt_m: 950,
+      bpf_nominal_hz: 95,
+      is_target: true,
+      cpa: { lat: 37.4, lon: -122.3, time_s: 40, slant_m: 950 },
+      waypoints: [],
+    },
+  ];
+
+  // Callsign ascending (natural numeric comparison: AAL404 -> N2SP -> N10SP)
+  const byCallsignAsc = sortFlights(sampleFlights, 'callsign', 'asc');
+  assert.equal(
+    byCallsignAsc.map((f) => f.callsign).join(','),
+    'AAL404,N2SP,N10SP'
+  );
+
+  // Callsign descending
+  const byCallsignDesc = sortFlights(sampleFlights, 'callsign', 'desc');
+  assert.equal(
+    byCallsignDesc.map((f) => f.callsign).join(','),
+    'N10SP,N2SP,AAL404'
+  );
+
+  // Speed ascending (85 -> 115 -> 140)
+  const bySpeedAsc = sortFlights(sampleFlights, 'speed', 'asc');
+  assert.equal(bySpeedAsc.map((f) => f.speed_ms).join(','), '85,115,140');
+
+  // Speed descending (140 -> 115 -> 85)
+  const bySpeedDesc = sortFlights(sampleFlights, 'speed', 'desc');
+  assert.equal(bySpeedDesc.map((f) => f.speed_ms).join(','), '140,115,85');
+
+  // Altitude ascending (950 -> 1400 -> 2400)
+  const byAltAsc = sortFlights(sampleFlights, 'alt', 'asc');
+  assert.equal(byAltAsc.map((f) => f.alt_m).join(','), '950,1400,2400');
+
+  // Altitude descending (2400 -> 1400 -> 950)
+  const byAltDesc = sortFlights(sampleFlights, 'alt', 'desc');
+  assert.equal(byAltDesc.map((f) => f.alt_m).join(','), '2400,1400,950');
+});
+
+test('Estimated 3D flight path trajectory computes elevated extrusion, slant range, and elevation angle', () => {
+  const flight = {
+    id: 'FL-3D',
+    callsign: 'N301SP',
+    aircraft: 'SR22',
+    aircraft_name: 'Cirrus SR22',
+    heading_deg: 90,
+    speed_ms: 110,
+    speed_kts: 214,
+    alt_m: 1800,
+    bpf_nominal_hz: 115,
+    is_target: true,
+    cpa: { lat: 37.4, lon: -122.3, time_s: 20, slant_m: 1800 },
+    waypoints: [],
+  };
+
+  const traj = computeEstimated3dTrajectory(flight, {
+    lat: 37.4,
+    lon: -122.3,
+    alt_m: 0,
+  });
+
+  assert.ok(traj !== null);
+  assert.ok(traj!.points.length >= 20);
+  // At CPA directly overhead (lat 37.4, lon -122.3, alt 1800m), 3D slant distance should be ~1800m and elevation near 90 deg
+  assert.ok(traj!.minSlant3dM >= 1750 && traj!.minSlant3dM <= 1900);
+  assert.ok(traj!.maxElevationDeg > 75);
+  assert.ok(traj!.cpaPoint.elevatedLat > traj!.cpaPoint.lat);
+});
+

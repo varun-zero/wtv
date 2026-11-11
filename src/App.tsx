@@ -12,16 +12,30 @@ import {
 } from './engine/dsp';
 import {
   BasinSummary,
+  FlightSortDirection,
+  FlightSortField,
   InversionResult,
   ScenarioFlight,
   runGeolocationInversion,
+  sortFlights,
 } from './engine/solver';
 import { GeoBounds } from './engine/geo';
 import { pathSoundSpeed } from './engine/atmosphere';
 import { ForensicVideoMonitor } from './components/ForensicVideoMonitor';
 import { SpectrogramViewport } from './components/SpectrogramViewport';
 import { GeodeticMapViewport } from './components/GeodeticMapViewport';
-import { Download, Plus, Sparkles, Trash2, Upload } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Box,
+  Download,
+  MapPin,
+  Plus,
+  Sparkles,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 
 type WorkspaceTab = 'spectrogram' | 'geolocation' | 'flights';
 
@@ -293,40 +307,73 @@ export function App() {
     setActiveEventIndex(0);
   };
 
+  const [flightSortField, setFlightSortField] =
+    useState<FlightSortField | null>(null);
+  const [flightSortDir, setFlightSortDir] =
+    useState<FlightSortDirection>('asc');
+
+  const handleToggleFlightSort = (field: FlightSortField) => {
+    if (flightSortField === field) {
+      setFlightSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setFlightSortField(field);
+      setFlightSortDir('asc');
+    }
+  };
+
+  const [selectedFlightId, setSelectedFlightId] = useState<string | null>(null);
+  const [overlay3dTrajectory, setOverlay3dTrajectory] =
+    useState<boolean>(false);
+
+  const sortedFlights = useMemo(
+    () => sortFlights(flights, flightSortField, flightSortDir),
+    [flights, flightSortField, flightSortDir]
+  );
+
   const handleAddFlight = () => {
     const nextNum = flights.length + 1;
     const centerLat = Number(((bounds.south + bounds.north) * 0.5).toFixed(4));
     const centerLon = Number(((bounds.west + bounds.east) * 0.5).toFixed(4));
+    const speedMs = 85 + (((nextNum - 1) * 18) % 65);
+    const altM = 1100 + (((nextNum - 1) * 450) % 2200);
     const newFlight: ScenarioFlight = {
-      id: `FL0${nextNum}`,
+      id: `FL-${Date.now()}-${nextNum}`,
       callsign: `N10${nextNum}SP`,
-      aircraft: 'C172',
-      aircraft_name: 'Cessna 172',
+      aircraft: nextNum % 2 === 1 ? 'C172' : 'SR22',
+      aircraft_name: nextNum % 2 === 1 ? 'Cessna 172' : 'Cirrus SR22',
       heading_deg: nextNum % 2 === 1 ? 90 : 210,
-      speed_ms: 100,
-      speed_kts: 194,
-      alt_m: 1500,
+      speed_ms: speedMs,
+      speed_kts: Math.round(speedMs * 1.94384),
+      alt_m: altM,
       bpf_nominal_hz: 85,
       is_target: true,
       cpa: {
         lat: centerLat,
         lon: centerLon,
         time_s: 20,
-        slant_m: 1500,
+        slant_m: altM,
       },
       waypoints: [],
+      notes: '',
     };
     setFlights((prev) => [...prev, newFlight]);
+    setSelectedFlightId((prev) => prev || newFlight.id);
   };
 
   const handleUpdateFlight = (
-    idx: number,
+    flightId: string,
     patch: Partial<ScenarioFlight>,
     cpaPatch?: Partial<NonNullable<ScenarioFlight['cpa']>>
   ) => {
+    const resetsKinematics =
+      cpaPatch !== undefined ||
+      patch.heading_deg !== undefined ||
+      patch.speed_ms !== undefined ||
+      patch.alt_m !== undefined;
+
     setFlights((prev) =>
-      prev.map((fl, i) => {
-        if (i !== idx) return fl;
+      prev.map((fl) => {
+        if (fl.id !== flightId) return fl;
         const nextCpa = fl.cpa
           ? { ...fl.cpa, ...(cpaPatch || {}) }
           : {
@@ -340,10 +387,76 @@ export function App() {
           ...fl,
           ...patch,
           cpa: nextCpa,
-          waypoints: [],
+          waypoints: resetsKinematics ? [] : fl.waypoints,
         };
       })
     );
+  };
+
+  const [isFetchingAdsb, setIsFetchingAdsb] = useState<boolean>(false);
+  const [adsbStatusMsg, setAdsbStatusMsg] = useState<string | null>(null);
+
+  const handleFetchLiveOpenSky = async () => {
+    setIsFetchingAdsb(true);
+    setAdsbStatusMsg(null);
+    try {
+      const url = `https://opensky-network.org/api/states/all?lamin=${bounds.south}&lomin=${bounds.west}&lamax=${bounds.north}&lomax=${bounds.east}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const states: unknown[][] = Array.isArray(data?.states) ? data.states : [];
+      const airborne = states.filter(
+        (s) =>
+          s[5] !== null &&
+          s[6] !== null &&
+          !s[8] && // on_ground === false
+          typeof s[9] === 'number' &&
+          s[9] > 25 &&
+          s[9] < 165 // prop speed range (25..165 m/s)
+      );
+
+      if (airborne.length === 0) {
+        setAdsbStatusMsg('No airborne propeller-speed aircraft in bounds right now.');
+      } else {
+        const imported: ScenarioFlight[] = airborne.slice(0, 12).map((s, idx) => {
+          const icao24 = String(s[0] || `OS${idx}`);
+          const callsign = String(s[1] || icao24).trim() || icao24;
+          const lon = Number(s[5]);
+          const lat = Number(s[6]);
+          const baroAlt = typeof s[7] === 'number' ? s[7] : 1500;
+          const velocityMs = typeof s[9] === 'number' ? s[9] : 95;
+          const headingDeg = typeof s[10] === 'number' ? s[10] : 90;
+
+          return {
+            id: `${icao24}-${idx}`,
+            callsign,
+            aircraft: velocityMs < 105 ? 'C172' : 'SR22',
+            aircraft_name: 'OpenSky Live ADS-B',
+            heading_deg: Number(headingDeg.toFixed(1)),
+            speed_ms: Number(velocityMs.toFixed(1)),
+            speed_kts: Number((velocityMs * 1.94384).toFixed(1)),
+            alt_m: Number(baroAlt.toFixed(0)),
+            bpf_nominal_hz: velocityMs < 105 ? 85 : 115,
+            is_target: idx < 2,
+            cpa: {
+              lat: Number(lat.toFixed(4)),
+              lon: Number(lon.toFixed(4)),
+              time_s: 20 + idx * 15,
+              slant_m: Number(Math.max(400, baroAlt).toFixed(0)),
+            },
+            waypoints: [],
+          };
+        });
+        setFlights(imported);
+        setAdsbStatusMsg(`Loaded ${imported.length} live aircraft from OpenSky.`);
+      }
+    } catch {
+      setAdsbStatusMsg('OpenSky rate-limited or unreachable; import JSON/CSV or add manually.');
+    } finally {
+      setIsFetchingAdsb(false);
+    }
   };
 
   const handleImportFlightsJson = async (
@@ -353,6 +466,46 @@ export function App() {
     if (!file) return;
     try {
       const text = await file.text();
+      if (file.name.toLowerCase().endsWith('.csv')) {
+        // Parse CSV (e.g. callsign,aircraft,heading,speed_ms,alt_m,lat,lon,time_s)
+        const lines = text
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean);
+        if (lines.length > 1) {
+          const headers = lines[0].toLowerCase().split(',');
+          const parsedFlights: ScenarioFlight[] = lines.slice(1).map((line, idx) => {
+            const cols = line.split(',');
+            const getCol = (name: string, fallback: string) => {
+              const i = headers.findIndex((h) => h.includes(name));
+              return i >= 0 && cols[i] !== undefined ? cols[i].trim() : fallback;
+            };
+            const lat = parseFloat(getCol('lat', String((bounds.south + bounds.north) * 0.5))) || 0;
+            const lon = parseFloat(getCol('lon', String((bounds.west + bounds.east) * 0.5))) || 0;
+            const alt = parseFloat(getCol('alt', '1500')) || 1500;
+            const spd = parseFloat(getCol('speed', '100')) || 100;
+            const hdg = parseFloat(getCol('head', '90')) || 90;
+            const timeS = parseFloat(getCol('time', '20')) || 20;
+            return {
+              id: `CSV-${idx + 1}`,
+              callsign: getCol('callsign', `FL0${idx + 1}`),
+              aircraft: getCol('aircraft', 'C172'),
+              aircraft_name: 'CSV Import',
+              heading_deg: hdg,
+              speed_ms: spd,
+              speed_kts: Number((spd * 1.94384).toFixed(1)),
+              alt_m: alt,
+              bpf_nominal_hz: 85,
+              is_target: true,
+              cpa: { lat, lon, time_s: timeS, slant_m: alt },
+              waypoints: [],
+            };
+          });
+          if (parsedFlights.length > 0) setFlights(parsedFlights);
+        }
+        return;
+      }
+
       const parsed = JSON.parse(text);
       const list = Array.isArray(parsed)
         ? parsed
@@ -369,7 +522,7 @@ export function App() {
         setEvents(parsed.events);
       }
     } catch {
-      // Ignore malformed JSON
+      // Ignore malformed file
     }
   };
 
@@ -999,6 +1152,7 @@ export function App() {
           <main className="flex flex-col min-h-0 overflow-hidden bg-[#05080f]">
             <GeodeticMapViewport
               bounds={bounds}
+              onChangeBounds={setBounds}
               fix={inversionResult.fix}
               radiusM={inversionResult.radius_m}
               status={inversionResult.status}
@@ -1009,6 +1163,10 @@ export function App() {
               onSelectBasin={setSelectedBasin}
               currentTime={currentTime}
               duration={duration}
+              selectedFlightId={selectedFlightId}
+              onSelectFlight={setSelectedFlightId}
+              show3dTrajectory={overlay3dTrajectory}
+              onToggle3dTrajectory={() => setOverlay3dTrajectory((v) => !v)}
             />
           </main>
         </div>
@@ -1017,24 +1175,68 @@ export function App() {
       {/* TAB 3: FLIGHT TRACKS */}
       {activeTab === 'flights' && (
         <main className="flex-1 overflow-y-auto p-6 bg-[#07090e]">
-          <div className="max-w-5xl mx-auto flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <h1 className="text-sm font-semibold text-slate-100">
-                ADS-B Flight Tracks
-              </h1>
-              <div className="flex items-center gap-2">
+          <div className="max-w-7xl mx-auto flex flex-col gap-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3">
+                <h1 className="text-sm font-semibold text-slate-100">
+                  ADS-B Flight Tracks
+                </h1>
+                {adsbStatusMsg && (
+                  <span className="text-xs font-mono text-cyan-400">
+                    {adsbStatusMsg}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  data-testid="toggle-3d-trajectory-overlay"
+                  aria-pressed={overlay3dTrajectory}
+                  onClick={() => setOverlay3dTrajectory((v) => !v)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded border flex items-center gap-1.5 transition-colors cursor-pointer ${
+                    overlay3dTrajectory
+                      ? 'bg-purple-950/70 text-purple-200 border-purple-500/60'
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                  }`}
+                >
+                  <Box className="w-3.5 h-3.5 text-purple-400" />
+                  <span>
+                    {overlay3dTrajectory
+                      ? '3D Trajectory Overlay: ON'
+                      : 'Overlay 3D Trajectory'}
+                  </span>
+                </button>
+                {overlay3dTrajectory && flights.length > 0 && (
+                  <button
+                    type="button"
+                    data-testid="view-3d-on-map-btn"
+                    onClick={() => setActiveTab('geolocation')}
+                    className="px-3 py-1.5 text-xs font-medium bg-purple-600/20 hover:bg-purple-600/30 text-purple-200 rounded border border-purple-500/40 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <MapPin className="w-3.5 h-3.5 text-purple-400" />
+                    <span>View on Map</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleFetchLiveOpenSky}
+                  disabled={isFetchingAdsb}
+                  className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-cyan-300 rounded border border-slate-700 flex items-center gap-1.5 cursor-pointer"
+                >
+                  {isFetchingAdsb ? 'Fetching...' : 'Fetch Live OpenSky'}
+                </button>
                 <button
                   type="button"
                   onClick={() => flightImportRef.current?.click()}
                   className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 rounded border border-slate-700 flex items-center gap-1.5 cursor-pointer"
                 >
                   <Upload className="w-3.5 h-3.5 text-cyan-400" />
-                  Import JSON
+                  Import JSON / CSV
                 </button>
                 <input
                   ref={flightImportRef}
                   type="file"
-                  accept=".json,application/json"
+                  accept=".json,.csv,application/json,text/csv"
                   onChange={handleImportFlightsJson}
                   className="hidden"
                 />
@@ -1052,163 +1254,337 @@ export function App() {
             {flights.length === 0 ? (
               <div className="bg-[#0b101b] border border-slate-800 rounded p-12 text-center flex flex-col items-center gap-3">
                 <p className="text-xs text-slate-400">
-                  No flight tracks added yet. Add a flight track manually or
-                  import a JSON file.
+                  No flight tracks loaded. Fetch live OpenSky ADS-B for your map
+                  bounds, import a JSON/CSV file, or add a flight manually.
                 </p>
-                <button
-                  type="button"
-                  onClick={handleAddFlight}
-                  className="px-3.5 py-1.5 text-xs font-medium bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Add First Flight
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleFetchLiveOpenSky}
+                    disabled={isFetchingAdsb}
+                    className="px-3.5 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded border border-slate-700 cursor-pointer"
+                  >
+                    {isFetchingAdsb ? 'Fetching...' : 'Fetch Live OpenSky'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAddFlight}
+                    className="px-3.5 py-1.5 text-xs font-medium bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add Flight
+                  </button>
+                </div>
               </div>
             ) : (
-              <div className="bg-[#0b101b] border border-slate-800 rounded overflow-hidden">
+              <div className="bg-[#0b101b] border border-slate-800 rounded overflow-x-auto">
                 <table className="w-full text-left font-mono text-xs tabular-nums">
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-400 bg-slate-900/60">
-                      <th className="py-2.5 px-3">Callsign</th>
-                      <th className="py-2.5 px-3">Aircraft</th>
-                      <th className="py-2.5 px-3">Heading (°)</th>
-                      <th className="py-2.5 px-3">Speed (m/s)</th>
-                      <th className="py-2.5 px-3">Alt (m)</th>
-                      <th className="py-2.5 px-3">CPA Lat</th>
-                      <th className="py-2.5 px-3">CPA Lon</th>
-                      <th className="py-2.5 px-3">CPA Time (s)</th>
-                      <th className="py-2.5 px-3 text-right">Action</th>
+                      <th className="py-2.5 px-2.5 whitespace-nowrap">3D Path</th>
+                      <th
+                        className="py-2 px-2.5 whitespace-nowrap"
+                        aria-sort={
+                          flightSortField === 'callsign'
+                            ? flightSortDir === 'asc'
+                              ? 'ascending'
+                              : 'descending'
+                            : 'none'
+                        }
+                      >
+                        <button
+                          type="button"
+                          data-testid="sort-flights-callsign"
+                          onClick={() => handleToggleFlightSort('callsign')}
+                          className={`inline-flex items-center gap-1.5 font-semibold transition-colors cursor-pointer ${
+                            flightSortField === 'callsign'
+                              ? 'text-cyan-300'
+                              : 'text-slate-300 hover:text-slate-100'
+                          }`}
+                        >
+                          <span>Callsign</span>
+                          {flightSortField === 'callsign' ? (
+                            flightSortDir === 'asc' ? (
+                              <ArrowUp className="w-3.5 h-3.5 text-cyan-400" />
+                            ) : (
+                              <ArrowDown className="w-3.5 h-3.5 text-cyan-400" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-3.5 h-3.5 text-slate-500" />
+                          )}
+                        </button>
+                      </th>
+                      <th className="py-2.5 px-2.5 whitespace-nowrap">Aircraft</th>
+                      <th className="py-2.5 px-2.5 whitespace-nowrap">Heading (°)</th>
+                      <th
+                        className="py-2 px-2.5 whitespace-nowrap"
+                        aria-sort={
+                          flightSortField === 'speed'
+                            ? flightSortDir === 'asc'
+                              ? 'ascending'
+                              : 'descending'
+                            : 'none'
+                        }
+                      >
+                        <button
+                          type="button"
+                          data-testid="sort-flights-speed"
+                          onClick={() => handleToggleFlightSort('speed')}
+                          className={`inline-flex items-center gap-1.5 font-semibold transition-colors cursor-pointer ${
+                            flightSortField === 'speed'
+                              ? 'text-cyan-300'
+                              : 'text-slate-300 hover:text-slate-100'
+                          }`}
+                        >
+                          <span>Speed (m/s)</span>
+                          {flightSortField === 'speed' ? (
+                            flightSortDir === 'asc' ? (
+                              <ArrowUp className="w-3.5 h-3.5 text-cyan-400" />
+                            ) : (
+                              <ArrowDown className="w-3.5 h-3.5 text-cyan-400" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-3.5 h-3.5 text-slate-500" />
+                          )}
+                        </button>
+                      </th>
+                      <th
+                        className="py-2 px-2.5 whitespace-nowrap"
+                        aria-sort={
+                          flightSortField === 'alt'
+                            ? flightSortDir === 'asc'
+                              ? 'ascending'
+                              : 'descending'
+                            : 'none'
+                        }
+                      >
+                        <button
+                          type="button"
+                          data-testid="sort-flights-alt"
+                          onClick={() => handleToggleFlightSort('alt')}
+                          className={`inline-flex items-center gap-1.5 font-semibold transition-colors cursor-pointer ${
+                            flightSortField === 'alt'
+                              ? 'text-cyan-300'
+                              : 'text-slate-300 hover:text-slate-100'
+                          }`}
+                        >
+                          <span>Alt (m)</span>
+                          {flightSortField === 'alt' ? (
+                            flightSortDir === 'asc' ? (
+                              <ArrowUp className="w-3.5 h-3.5 text-cyan-400" />
+                            ) : (
+                              <ArrowDown className="w-3.5 h-3.5 text-cyan-400" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-3.5 h-3.5 text-slate-500" />
+                          )}
+                        </button>
+                      </th>
+                      <th className="py-2.5 px-2.5 whitespace-nowrap">CPA Lat</th>
+                      <th className="py-2.5 px-2.5 whitespace-nowrap">CPA Lon</th>
+                      <th className="py-2.5 px-2.5 whitespace-nowrap">CPA Time (s)</th>
+                      <th className="py-2.5 px-2.5 whitespace-nowrap">Pilot Notes / Comments</th>
+                      <th className="py-2.5 px-2.5 text-right whitespace-nowrap">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/70">
-                    {flights.map((fl, idx) => (
-                      <tr key={fl.id} className="hover:bg-slate-900/30">
-                        <td className="py-2 px-3">
-                          <input
-                            type="text"
-                            value={fl.callsign}
-                            onChange={(e) =>
-                              handleUpdateFlight(idx, {
-                                callsign: e.target.value,
-                              })
-                            }
-                            className="w-24 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                          />
-                        </td>
-                        <td className="py-2 px-3">
-                          <select
-                            value={fl.aircraft}
-                            onChange={(e) =>
-                              handleUpdateFlight(idx, {
-                                aircraft: e.target.value,
-                              })
-                            }
-                            className="bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                          >
-                            <option value="C172">C172</option>
-                            <option value="C182">C182</option>
-                            <option value="SR22">SR22</option>
-                            <option value="DA40">DA40</option>
-                            <option value="PA34">PA34</option>
-                            <option value="C208">C208</option>
-                          </select>
-                        </td>
-                        <td className="py-2 px-3">
-                          <input
-                            type="number"
-                            value={fl.heading_deg}
-                            onChange={(e) =>
-                              handleUpdateFlight(idx, {
-                                heading_deg: parseFloat(e.target.value) || 0,
-                              })
-                            }
-                            className="w-20 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                          />
-                        </td>
-                        <td className="py-2 px-3">
-                          <input
-                            type="number"
-                            value={fl.speed_ms}
-                            onChange={(e) =>
-                              handleUpdateFlight(idx, {
-                                speed_ms: parseFloat(e.target.value) || 0,
-                              })
-                            }
-                            className="w-20 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                          />
-                        </td>
-                        <td className="py-2 px-3">
-                          <input
-                            type="number"
-                            value={fl.alt_m}
-                            onChange={(e) =>
-                              handleUpdateFlight(idx, {
-                                alt_m: parseFloat(e.target.value) || 0,
-                              })
-                            }
-                            className="w-20 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                          />
-                        </td>
-                        <td className="py-2 px-3">
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={fl.cpa?.lat ?? 0}
-                            onChange={(e) =>
-                              handleUpdateFlight(
-                                idx,
-                                {},
-                                { lat: parseFloat(e.target.value) || 0 }
-                              )
-                            }
-                            className="w-24 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                          />
-                        </td>
-                        <td className="py-2 px-3">
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={fl.cpa?.lon ?? 0}
-                            onChange={(e) =>
-                              handleUpdateFlight(
-                                idx,
-                                {},
-                                { lon: parseFloat(e.target.value) || 0 }
-                              )
-                            }
-                            className="w-24 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                          />
-                        </td>
-                        <td className="py-2 px-3">
-                          <input
-                            type="number"
-                            value={fl.cpa?.time_s ?? 0}
-                            onChange={(e) =>
-                              handleUpdateFlight(
-                                idx,
-                                {},
-                                { time_s: parseFloat(e.target.value) || 0 }
-                              )
-                            }
-                            className="w-20 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                          />
-                        </td>
-                        <td className="py-2 px-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setFlights((prev) =>
-                                prev.filter((_, i) => i !== idx)
-                              )
-                            }
-                            className="p-1.5 text-slate-400 hover:text-rose-400 cursor-pointer"
-                            aria-label="Delete flight"
-                          >
-                            <Trash2 className="w-4 h-4 inline" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {sortedFlights.map((fl) => {
+                      const isSelectedFor3d =
+                        (selectedFlightId || flights[0]?.id) === fl.id;
+                      return (
+                        <tr
+                          key={fl.id}
+                          onClick={() => setSelectedFlightId(fl.id)}
+                          className={`transition-colors ${
+                            isSelectedFor3d && overlay3dTrajectory
+                              ? 'bg-purple-950/20 hover:bg-purple-950/30'
+                              : isSelectedFor3d
+                              ? 'bg-slate-900/50 hover:bg-slate-900/70'
+                              : 'hover:bg-slate-900/30'
+                          }`}
+                        >
+                          <td className="py-2 px-2.5">
+                            <button
+                              type="button"
+                              data-testid="select-flight-3d-btn"
+                              aria-pressed={
+                                isSelectedFor3d && overlay3dTrajectory
+                              }
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (isSelectedFor3d && overlay3dTrajectory) {
+                                  setOverlay3dTrajectory(false);
+                                } else {
+                                  setSelectedFlightId(fl.id);
+                                  setOverlay3dTrajectory(true);
+                                }
+                              }}
+                              className={`px-2 py-1 text-[11px] font-mono rounded border flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
+                                isSelectedFor3d && overlay3dTrajectory
+                                  ? 'bg-purple-950/80 text-purple-200 border-purple-500/60'
+                                  : isSelectedFor3d
+                                  ? 'bg-slate-800 text-cyan-300 border-slate-700'
+                                  : 'bg-[#0e1422] text-slate-400 border-slate-800 hover:text-slate-200'
+                              }`}
+                            >
+                              <Box className="w-3 h-3 shrink-0" />
+                              <span>
+                                {isSelectedFor3d && overlay3dTrajectory
+                                  ? '3D Active'
+                                  : '3D Path'}
+                              </span>
+                            </button>
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="text"
+                              aria-label="Flight callsign"
+                              value={fl.callsign}
+                              onChange={(e) =>
+                                handleUpdateFlight(fl.id, {
+                                  callsign: e.target.value,
+                                })
+                              }
+                              className="w-20 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <select
+                              aria-label="Aircraft type"
+                              value={fl.aircraft}
+                              onChange={(e) =>
+                                handleUpdateFlight(fl.id, {
+                                  aircraft: e.target.value,
+                                })
+                              }
+                              className="bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                            >
+                              <option value="C172">C172</option>
+                              <option value="C182">C182</option>
+                              <option value="SR22">SR22</option>
+                              <option value="DA40">DA40</option>
+                              <option value="PA34">PA34</option>
+                              <option value="C208">C208</option>
+                            </select>
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="number"
+                              aria-label="Heading degrees"
+                              value={fl.heading_deg}
+                              onChange={(e) =>
+                                handleUpdateFlight(fl.id, {
+                                  heading_deg: parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className="w-16 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="number"
+                              aria-label="Flight speed m/s"
+                              value={fl.speed_ms}
+                              onChange={(e) =>
+                                handleUpdateFlight(fl.id, {
+                                  speed_ms: parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className="w-16 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="number"
+                              aria-label="Flight altitude meters"
+                              value={fl.alt_m}
+                              onChange={(e) =>
+                                handleUpdateFlight(fl.id, {
+                                  alt_m: parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className="w-16 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="number"
+                              step="0.01"
+                              aria-label="CPA latitude"
+                              value={fl.cpa?.lat ?? 0}
+                              onChange={(e) =>
+                                handleUpdateFlight(
+                                  fl.id,
+                                  {},
+                                  { lat: parseFloat(e.target.value) || 0 }
+                                )
+                              }
+                              className="w-20 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="number"
+                              step="0.01"
+                              aria-label="CPA longitude"
+                              value={fl.cpa?.lon ?? 0}
+                              onChange={(e) =>
+                                handleUpdateFlight(
+                                  fl.id,
+                                  {},
+                                  { lon: parseFloat(e.target.value) || 0 }
+                                )
+                              }
+                              className="w-20 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="number"
+                              aria-label="CPA time seconds"
+                              value={fl.cpa?.time_s ?? 0}
+                              onChange={(e) =>
+                                handleUpdateFlight(
+                                  fl.id,
+                                  {},
+                                  { time_s: parseFloat(e.target.value) || 0 }
+                                )
+                              }
+                              className="w-16 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5 min-w-[200px]">
+                            <textarea
+                              rows={2}
+                              aria-label="Pilot notes or mission comments"
+                              placeholder="Add pilot notes or mission comments..."
+                              value={fl.notes ?? ''}
+                              onChange={(e) =>
+                                handleUpdateFlight(fl.id, {
+                                  notes: e.target.value,
+                                })
+                              }
+                              className="w-full min-w-[180px] bg-[#0e1422] border border-slate-800 focus:border-cyan-500/60 focus:outline-none rounded px-2.5 py-1.5 text-slate-100 placeholder:text-slate-600 font-sans text-xs resize-y leading-relaxed"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5 text-right">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setFlights((prev) =>
+                                  prev.filter((item) => item.id !== fl.id)
+                                );
+                              }}
+                              className="p-1.5 text-slate-400 hover:text-rose-400 cursor-pointer"
+                              aria-label="Delete flight"
+                            >
+                              <Trash2 className="w-4 h-4 inline" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
