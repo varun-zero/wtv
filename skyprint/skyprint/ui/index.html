@@ -1,0 +1,1577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SkyPrint // Acoustic-Doppler Geolocation Workbench</title>
+  <style>
+    :root {
+      --bg-base: #070a0f;
+      --bg-panel: #0d131d;
+      --bg-subpanel: #131c2b;
+      --bg-hover: #1a263a;
+      --border-subtle: rgba(255, 255, 255, 0.07);
+      --border-strong: rgba(255, 255, 255, 0.14);
+      --text-main: #f3f6fa;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --color-emerald: #10b981;
+      --color-emerald-bg: rgba(16, 185, 129, 0.12);
+      --color-emerald-border: rgba(16, 185, 129, 0.35);
+      --color-amber: #f59e0b;
+      --color-amber-bg: rgba(245, 158, 11, 0.12);
+      --color-amber-border: rgba(245, 158, 11, 0.35);
+      --color-cyan: #38bdf8;
+      --color-cyan-bg: rgba(56, 189, 248, 0.12);
+      --color-cyan-border: rgba(56, 189, 248, 0.35);
+      --color-rose: #f43f5e;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.45;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Tabular figures across all metrics */
+    .num, td, input, select {
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: 'tnum' 1;
+      font-family: var(--font-mono);
+    }
+
+    /* Custom tactical scrollbar */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: var(--bg-base); }
+    ::-webkit-scrollbar-thumb { background: #253347; border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: #384c66; }
+
+    /* Header Bar */
+    header {
+      height: 48px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-title {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--color-emerald);
+      box-shadow: 0 0 8px var(--color-emerald);
+    }
+
+    .brand-desc {
+      font-size: 11px;
+      color: var(--text-dim);
+      border-left: 1px solid var(--border-subtle);
+      padding-left: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .header-center {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .scenario-picker-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    select.scenario-select {
+      background: var(--bg-subpanel);
+      color: var(--text-main);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 5px 10px;
+      font-size: 12px;
+      outline: none;
+      cursor: pointer;
+      min-width: 280px;
+      transition: border-color 0.15s ease;
+    }
+
+    select.scenario-select:hover { border-color: var(--color-cyan); }
+    select.scenario-select:focus { border-color: var(--color-cyan); box-shadow: 0 0 0 1px var(--color-cyan); }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn {
+      background: var(--bg-subpanel);
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
+      padding: 5px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+
+    .btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-strong);
+    }
+
+    .btn-primary {
+      background: #0ea5e9;
+      color: #fff;
+      border-color: #38bdf8;
+    }
+
+    .btn-primary:hover {
+      background: #0284c7;
+      border-color: #7dd3fc;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .badge-located {
+      background: var(--color-emerald-bg);
+      color: var(--color-emerald);
+      border: 1px solid var(--color-emerald-border);
+    }
+
+    .badge-ambiguous {
+      background: var(--color-amber-bg);
+      color: var(--color-amber);
+      border: 1px solid var(--color-amber-border);
+    }
+
+    /* Main Workspace Layout */
+    .workspace {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 300px 1fr 340px;
+      overflow: hidden;
+      background: var(--bg-base);
+    }
+
+    /* Common Panel Styles */
+    .panel {
+      background: var(--bg-panel);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .panel-left { border-right: 1px solid var(--border-subtle); }
+    .panel-right { border-left: 1px solid var(--border-subtle); }
+
+    .panel-header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(0, 0, 0, 0.15);
+    }
+
+    .panel-body {
+      padding: 14px;
+      overflow-y: auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* Section Subheaders */
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Telemetry Grid Box */
+    .telemetry-card {
+      background: var(--bg-subpanel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      padding: 10px 12px;
+    }
+
+    .telemetry-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 0;
+      font-size: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .telemetry-row:last-child { border-bottom: none; }
+    .telemetry-key { color: var(--text-muted); font-size: 11px; }
+    .telemetry-val { font-family: var(--font-mono); color: var(--text-main); font-size: 12px; }
+
+    /* Audio Player Widget */
+    .audio-player-box {
+      background: var(--bg-subpanel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .player-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .play-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 4px;
+      background: var(--color-cyan);
+      color: #051923;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      transition: background 0.15s ease;
+    }
+
+    .play-btn:hover { background: #7dd3fc; }
+
+    .progress-track {
+      flex: 1;
+      height: 6px;
+      background: #1c2738;
+      border-radius: 3px;
+      position: relative;
+      cursor: pointer;
+    }
+
+    .progress-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 0%;
+      background: var(--color-cyan);
+      border-radius: 3px;
+    }
+
+    .player-time {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      min-width: 75px;
+      text-align: right;
+    }
+
+    /* Center Viewport */
+    .center-viewport {
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-base);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .viewport-toolbar {
+      height: 38px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      z-index: 5;
+    }
+
+    .tab-group {
+      display: flex;
+      gap: 2px;
+      background: var(--bg-base);
+      padding: 2px;
+      border-radius: 4px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 500;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .tab-btn.active {
+      background: var(--bg-subpanel);
+      color: #fff;
+    }
+
+    .tab-btn:hover:not(.active) {
+      color: var(--text-main);
+    }
+
+    .toolbar-tools {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .canvas-container {
+      flex: 1;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .view-pane {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+    }
+
+    .view-pane.active { display: flex; }
+
+    /* Map & Spectrogram Canvas */
+    canvas.tactical-canvas {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      background: #05080c;
+      cursor: crosshair;
+    }
+
+    .canvas-overlay-info {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      background: rgba(13, 19, 29, 0.85);
+      border: 1px solid var(--border-subtle);
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      backdrop-filter: blur(4px);
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    .canvas-legend {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: rgba(13, 19, 29, 0.88);
+      border: 1px solid var(--border-subtle);
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      backdrop-filter: blur(4px);
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+    }
+
+    .legend-color {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+    }
+
+    /* Decision Card in Right Panel */
+    .decision-banner {
+      background: var(--bg-subpanel);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .decision-banner.status-located {
+      border-color: var(--color-emerald-border);
+      background: rgba(16, 185, 129, 0.04);
+    }
+
+    .decision-banner.status-ambiguous {
+      border-color: var(--color-amber-border);
+      background: rgba(245, 158, 11, 0.04);
+    }
+
+    .verdict-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .verdict-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .verdict-reasons {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .verdict-reasons li {
+      display: flex;
+      gap: 6px;
+      line-height: 1.4;
+    }
+
+    .verdict-reasons li::before {
+      content: "•";
+      color: var(--color-cyan);
+    }
+
+    /* Data Table */
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+
+    table.data-table th {
+      text-align: left;
+      padding: 6px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(0, 0, 0, 0.15);
+    }
+
+    table.data-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text-main);
+    }
+
+    table.data-table tr:hover td {
+      background: var(--bg-hover);
+    }
+
+    /* Progress Overlay during Inversion */
+    .inversion-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(7, 10, 15, 0.88);
+      backdrop-filter: blur(6px);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      gap: 16px;
+    }
+
+    .inversion-overlay.active { display: flex; }
+
+    .inversion-box {
+      width: 440px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+    }
+
+    .stage-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    .stage-item.done { color: var(--text-main); }
+    .stage-item.active { color: var(--color-cyan); font-weight: 600; }
+
+    .stage-icon {
+      width: 16px;
+      height: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .stage-item.done .stage-icon { color: var(--color-emerald); }
+    .stage-item.active .stage-icon { color: var(--color-cyan); animation: spin 1s linear infinite; }
+
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <!-- Header Bar -->
+  <header>
+    <div class="brand">
+      <div class="brand-title">
+        <div class="brand-dot"></div>
+        SKYPRINT
+      </div>
+      <div class="brand-desc">Acoustic-Doppler Geolocation Console</div>
+    </div>
+
+    <div class="header-center">
+      <span class="scenario-picker-label">Scenario Dataset:</span>
+      <select id="scenarioSelect" class="scenario-select"></select>
+      <div id="statusBadge" class="badge badge-located">LOCATED</div>
+    </div>
+
+    <div class="header-actions">
+      <button id="btnRunInversion" class="btn btn-primary">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        Execute Inversion
+      </button>
+      <button id="btnExport" class="btn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        Export GeoJSON
+      </button>
+    </div>
+  </header>
+
+  <!-- Main 3-Column Workspace -->
+  <div class="workspace">
+
+    <!-- Left Dock: Ingest & Telemetry Parameters -->
+    <aside class="panel panel-left">
+      <div class="panel-header">
+        <span>Acoustic Ingestion & Priors</span>
+        <span class="num">8000 Hz</span>
+      </div>
+      <div class="panel-body">
+
+        <!-- Audio Player Widget -->
+        <div>
+          <div class="section-title">Flyover Acoustic Audio</div>
+          <div class="audio-player-box">
+            <div class="player-controls">
+              <button id="playBtn" class="play-btn">▶</button>
+              <div id="progressTrack" class="progress-track">
+                <div id="progressFill" class="progress-fill"></div>
+              </div>
+              <div id="playerTime" class="player-time">00:00 / 00:40</div>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Codec / Format</span>
+              <span id="audioFormat" class="telemetry-val">16-bit Linear PCM</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Detection Contrast</span>
+              <span class="telemetry-val">Median/MAD z-score</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Atmospheric Medium Telemetry -->
+        <div>
+          <div class="section-title">Atmospheric Medium (Moving Medium)</div>
+          <div class="telemetry-card">
+            <div class="telemetry-row">
+              <span class="telemetry-key">Temperature (Ground / Offset)</span>
+              <span id="atmosTemp" class="telemetry-val">15.0 °C</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Effective Path Sound Speed c</span>
+              <span id="atmosSpeed" class="telemetry-val">339.8 m/s</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Surface Wind Vector</span>
+              <span id="atmosWind" class="telemetry-val">+3.0 E / -2.0 N m/s</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Wind Bearing / Magnitude</span>
+              <span id="atmosBearing" class="telemetry-val">123.7° @ 3.6 m/s</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Absorption Model</span>
+              <span class="telemetry-val">ISO 9613-1 / ANSI S1.26</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Search Spatial Bounds -->
+        <div>
+          <div class="section-title">Search Coordinate Bounding Box</div>
+          <div class="telemetry-card">
+            <div class="telemetry-row">
+              <span class="telemetry-key">West Longitude</span>
+              <span id="boundWest" class="telemetry-val">-122.5500°</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">East Longitude</span>
+              <span id="boundEast" class="telemetry-val">-122.0500°</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">South Latitude</span>
+              <span id="boundSouth" class="telemetry-val">+37.2000°</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">North Latitude</span>
+              <span id="boundNorth" class="telemetry-val">+37.6000°</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Geodesy Reference</span>
+              <span class="telemetry-val">WGS84 Ellipsoid (Bowring)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Target Aircraft Priors -->
+        <div>
+          <div class="section-title">Target Aircraft Class Priors</div>
+          <div class="telemetry-card">
+            <div class="telemetry-row">
+              <span class="telemetry-key">C172 Skyhawk BPF Prior</span>
+              <span class="telemetry-val">60 – 100 Hz</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">SR22 Cirrus BPF Prior</span>
+              <span class="telemetry-val">90 – 140 Hz</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Speed Envelope</span>
+              <span class="telemetry-val">40 – 200 m/s</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Audibility Corridor Slant</span>
+              <span class="telemetry-val">200 – 20,000 m</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- Center Viewport: Spectrogram & Spatial Canvas -->
+    <main class="center-viewport">
+      <div class="viewport-toolbar">
+        <div class="tab-group">
+          <button id="tabMap" class="tab-btn active">⌖ WGS84 Geolocation Radar Map</button>
+          <button id="tabSpec" class="tab-btn">〰 Spectrogram & Ridge Tracer</button>
+          <button id="tabSplit" class="tab-btn">◫ Dual Split View</button>
+        </div>
+
+        <div class="toolbar-tools">
+          <button id="btnResetView" class="btn" style="padding: 3px 8px; font-size: 11px;">
+            ⟳ Reset View
+          </button>
+        </div>
+      </div>
+
+      <div class="canvas-container">
+        <!-- Map View Pane -->
+        <div id="paneMap" class="view-pane active">
+          <canvas id="mapCanvas" class="tactical-canvas"></canvas>
+          <div id="mapCoordinates" class="canvas-overlay-info">
+            LAT: 37.4000° | LON: -122.3000° | GRID: WGS84 | ZOOM: 1.0x
+          </div>
+          <div class="canvas-legend">
+            <div class="legend-item"><div class="legend-color" style="background:#10b981;"></div>Estimated Fix Reticle</div>
+            <div class="legend-item"><div class="legend-color" style="background:#f43f5e;"></div>Ground Truth Target</div>
+            <div class="legend-item"><div class="legend-color" style="background:#38bdf8;"></div>ADS-B Flight Splines</div>
+            <div class="legend-item"><div class="legend-color" style="background:rgba(56, 189, 248, 0.15); border: 1px dashed #38bdf8;"></div>Audibility Corridor</div>
+            <div class="legend-item"><div class="legend-color" style="background:rgba(245, 158, 11, 0.4);"></div>Candidate Likelihood Basin</div>
+          </div>
+        </div>
+
+        <!-- Spectrogram View Pane -->
+        <div id="paneSpec" class="view-pane">
+          <canvas id="specCanvas" class="tactical-canvas"></canvas>
+          <div id="specCoordinates" class="canvas-overlay-info">
+            TIME: 0.0s | FREQ: 0.0 Hz | CONTRAST: z=0.0
+          </div>
+          <div class="canvas-legend">
+            <div class="legend-item"><div class="legend-color" style="background:#38bdf8;"></div>Fundamental f0 Track (k=1)</div>
+            <div class="legend-item"><div class="legend-color" style="background:#a855f7;"></div>2nd Harmonic (k=2)</div>
+            <div class="legend-item"><div class="legend-color" style="background:#ec4899;"></div>3rd Harmonic (k=3)</div>
+            <div class="legend-item"><div class="legend-color" style="background:#10b981;"></div>CPA Arrival Instant tc</div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Right Dock: Evidence Ledger & Decision Matrix -->
+    <aside class="panel panel-right">
+      <div class="panel-header">
+        <span>Evidence Ledger & Inversion</span>
+        <span id="scoreBadge" class="num" style="color:var(--color-cyan);">Score 48.52</span>
+      </div>
+      <div class="panel-body">
+
+        <!-- Decision Card -->
+        <div id="decisionCard" class="decision-banner status-located">
+          <div class="verdict-header">
+            <span class="verdict-title">Decision Verdict</span>
+            <span id="decisionStatus" class="badge badge-located">LOCATED</span>
+          </div>
+
+          <div class="telemetry-row">
+            <span class="telemetry-key">Estimated Position</span>
+            <span id="fixCoords" class="telemetry-val">37.4042°, -122.2965°</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-key">Localization Error vs Truth</span>
+            <span id="fixError" class="telemetry-val" style="color:var(--color-emerald); font-weight:700;">470 m</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-key">95% Uncertainty Radius</span>
+            <span id="fixRadius" class="telemetry-val">1601.7 m</span>
+          </div>
+
+          <div style="margin-top: 4px;">
+            <div class="telemetry-key" style="margin-bottom: 4px;">Geometric Decision Proof:</div>
+            <ul id="decisionReasons" class="verdict-reasons"></ul>
+          </div>
+        </div>
+
+        <!-- Joint Clock Telemetry -->
+        <div>
+          <div class="section-title">Joint Clock State Inversion</div>
+          <div class="telemetry-card">
+            <div class="telemetry-row">
+              <span class="telemetry-key">Recovered Clock Offset Δt</span>
+              <span id="clockOffset" class="telemetry-val">-0.05 s</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Recovered Hardware Drift</span>
+              <span id="clockDrift" class="telemetry-val">0.0 ppm</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="telemetry-key">Degeneracy State</span>
+              <span id="degeneracyState" class="telemetry-val">Resolved by Crossing Paths</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Detected Acoustic Events -->
+        <div>
+          <div class="section-title">Detected Doppler Events</div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Ev</th>
+                <th>f0</th>
+                <th>Speed</th>
+                <th>Slant</th>
+                <th>tc</th>
+                <th>SNR</th>
+              </tr>
+            </thead>
+            <tbody id="eventsTableBody"></tbody>
+          </table>
+        </div>
+
+        <!-- Ranked Candidate Basins -->
+        <div>
+          <div class="section-title">Top Ranked Geographic Basins</div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Lat / Lon</th>
+                <th>Score</th>
+                <th>Δ Top</th>
+                <th>Clock</th>
+              </tr>
+            </thead>
+            <tbody id="basinsTableBody"></tbody>
+          </table>
+        </div>
+
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- Inversion Progress Modal -->
+  <div id="inversionOverlay" class="inversion-overlay">
+    <div class="inversion-box">
+      <div style="font-size: 14px; font-weight: 700; color: #fff; display: flex; align-items: center; justify-content: space-between;">
+        <span>Running Acoustic Inversion Pipeline</span>
+        <span id="pipelineProgress" class="num" style="color:var(--color-cyan);">0%</span>
+      </div>
+      <div id="pipelineStages" style="display:flex; flex-direction:column; gap:8px; margin-top:8px;"></div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let currentScenario = null;
+    let scenariosList = [];
+    let activeTab = 'map'; // 'map', 'spec', 'split'
+    let audio = null;
+    let isPlaying = false;
+    let animFrame = null;
+
+    // Map Transform
+    let mapPan = { x: 0, y: 0 };
+    let mapZoom = 1.0;
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+
+    // Elements
+    const scenarioSelect = document.getElementById('scenarioSelect');
+    const statusBadge = document.getElementById('statusBadge');
+    const mapCanvas = document.getElementById('mapCanvas');
+    const specCanvas = document.getElementById('specCanvas');
+    const mapCtx = mapCanvas.getContext('2d');
+    const specCtx = specCanvas.getContext('2d');
+
+    const tabMap = document.getElementById('tabMap');
+    const tabSpec = document.getElementById('tabSpec');
+    const tabSplit = document.getElementById('tabSplit');
+    const paneMap = document.getElementById('paneMap');
+    const paneSpec = document.getElementById('paneSpec');
+
+    const playBtn = document.getElementById('playBtn');
+    const progressTrack = document.getElementById('progressTrack');
+    const progressFill = document.getElementById('progressFill');
+    const playerTime = document.getElementById('playerTime');
+
+    // Initialize application
+    async function init() {
+      setupWindowEvents();
+      setupTabs();
+      setupAudio();
+      setupMapInteractions();
+
+      if (window.__PRELOADED_SCENARIOS__) {
+        scenariosList = Object.values(window.__PRELOADED_SCENARIOS__);
+        populateScenarioSelector();
+        if (scenariosList.length > 0) {
+          loadScenario(scenariosList[0].id);
+        }
+      } else {
+        try {
+          const res = await fetch('/api/scenarios');
+          scenariosList = await res.json();
+          populateScenarioSelector();
+          if (scenariosList.length > 0) {
+            loadScenario(scenariosList[0].id);
+          }
+        } catch (err) {
+          console.error('Failed to load scenarios:', err);
+        }
+      }
+    }
+
+    function setupWindowEvents() {
+      window.addEventListener('resize', () => {
+        resizeCanvases();
+        renderActiveViews();
+      });
+
+      document.getElementById('btnResetView').addEventListener('click', () => {
+        mapPan = { x: 0, y: 0 };
+        mapZoom = 1.0;
+        renderMap();
+      });
+
+      document.getElementById('btnRunInversion').addEventListener('click', triggerInversionAnimation);
+
+      document.getElementById('btnExport').addEventListener('click', () => {
+        if (!currentScenario) return;
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(currentScenario, null, 2));
+        const dlAnchor = document.createElement('a');
+        dlAnchor.setAttribute("href", dataStr);
+        dlAnchor.setAttribute("download", `skyprint_${currentScenario.id}_fix.json`);
+        dlAnchor.click();
+      });
+    }
+
+    function populateScenarioSelector() {
+      scenarioSelect.innerHTML = '';
+      scenariosList.forEach(sc => {
+        const opt = document.createElement('option');
+        opt.value = sc.id;
+        opt.textContent = `${sc.name} [${sc.status.toUpperCase()}]`;
+        scenarioSelect.appendChild(opt);
+      });
+
+      scenarioSelect.addEventListener('change', (e) => {
+        loadScenario(e.target.value);
+      });
+    }
+
+    async function loadScenario(id) {
+      try {
+        if (window.__PRELOADED_SCENARIOS__ && window.__PRELOADED_SCENARIOS__[id]) {
+          currentScenario = window.__PRELOADED_SCENARIOS__[id];
+        } else {
+          const res = await fetch(`/api/scenario?id=${encodeURIComponent(id)}`);
+          currentScenario = await res.json();
+        }
+        updateUI();
+        resizeCanvases();
+        renderActiveViews();
+        loadAudioTrack(id);
+      } catch (err) {
+        console.error(`Error loading scenario ${id}:`, err);
+      }
+    }
+
+    function updateUI() {
+      const sc = currentScenario;
+      if (!sc) return;
+
+      // Header status badge
+      statusBadge.className = `badge badge-${sc.status}`;
+      statusBadge.textContent = sc.badge || sc.status.toUpperCase();
+
+      // Atmospheric dock
+      document.getElementById('atmosTemp').textContent = `${sc.atmos.temp_c.toFixed(1)} °C`;
+      document.getElementById('atmosSpeed').textContent = `${sc.atmos.c_path_ms.toFixed(1)} m/s`;
+      document.getElementById('atmosWind').textContent = `${sc.atmos.wind_e_ms > 0 ? '+' : ''}${sc.atmos.wind_e_ms.toFixed(1)} E / ${sc.atmos.wind_n_ms > 0 ? '+' : ''}${sc.atmos.wind_n_ms.toFixed(1)} N m/s`;
+      document.getElementById('atmosBearing').textContent = `${sc.atmos.wind_bearing_deg.toFixed(1)}° @ ${sc.atmos.wind_speed_ms.toFixed(1)} m/s`;
+
+      // Bounds dock
+      document.getElementById('boundWest').textContent = `${sc.bounds.west.toFixed(4)}°`;
+      document.getElementById('boundEast').textContent = `${sc.bounds.east.toFixed(4)}°`;
+      document.getElementById('boundSouth').textContent = `${sc.bounds.south.toFixed(4)}°`;
+      document.getElementById('boundNorth').textContent = `${sc.bounds.north.toFixed(4)}°`;
+
+      // Decision card
+      const decCard = document.getElementById('decisionCard');
+      decCard.className = `decision-banner status-${sc.status}`;
+      const decStatus = document.getElementById('decisionStatus');
+      decStatus.className = `badge badge-${sc.status}`;
+      decStatus.textContent = sc.status.toUpperCase();
+
+      document.getElementById('scoreBadge').textContent = `Score ${sc.score.toFixed(2)}`;
+      document.getElementById('fixCoords').textContent = `${sc.fix.lat.toFixed(5)}°, ${sc.fix.lon.toFixed(5)}°`;
+      document.getElementById('fixError').textContent = sc.error_m ? `${sc.error_m.toFixed(0)} m` : '—';
+      document.getElementById('fixRadius').textContent = `${sc.radius_m.toFixed(1)} m`;
+
+      const reasonsEl = document.getElementById('decisionReasons');
+      reasonsEl.innerHTML = '';
+      (sc.reasons || []).forEach(r => {
+        const li = document.createElement('li');
+        li.textContent = r;
+        reasonsEl.appendChild(li);
+      });
+
+      // Joint Clock
+      document.getElementById('clockOffset').textContent = `${sc.clock.offset_s > 0 ? '+' : ''}${sc.clock.offset_s.toFixed(2)} s`;
+      document.getElementById('clockDrift').textContent = `${sc.clock.drift_ppm.toFixed(1)} ppm`;
+      document.getElementById('degeneracyState').textContent = sc.status === 'ambiguous' ? 'Degenerate (Parallel Corridors)' : 'Resolved by Crossing Paths';
+
+      // Events Table
+      const evTbody = document.getElementById('eventsTableBody');
+      evTbody.innerHTML = '';
+      (sc.events || []).forEach(ev => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><b>${ev.id}</b></td>
+          <td class="num">${ev.f0_hz.toFixed(1)} Hz</td>
+          <td class="num">${ev.speed_ms.toFixed(0)} m/s</td>
+          <td class="num">${ev.slant_m.toFixed(0)} m</td>
+          <td class="num">${ev.t_cpa_s.toFixed(0)}s</td>
+          <td class="num" style="color:var(--color-emerald);">${ev.snr_db.toFixed(1)} dB</td>
+        `;
+        evTbody.appendChild(tr);
+      });
+
+      // Basins Table
+      const bTbody = document.getElementById('basinsTableBody');
+      bTbody.innerHTML = '';
+      (sc.basins || []).forEach(b => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${b.rank}</td>
+          <td class="num">${b.lat.toFixed(4)}, ${b.lon.toFixed(4)}</td>
+          <td class="num"><b>${b.score.toFixed(2)}</b></td>
+          <td class="num">${b.delta === 0 ? '—' : b.delta.toFixed(2)}</td>
+          <td class="num">${b.clock}</td>
+        `;
+        bTbody.appendChild(tr);
+      });
+    }
+
+    // Audio System
+    function setupAudio() {
+      audio = new Audio();
+      audio.addEventListener('timeupdate', () => {
+        if (!audio.duration) return;
+        const pct = (audio.currentTime / audio.duration) * 100;
+        progressFill.style.width = `${pct}%`;
+        playerTime.textContent = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration)}`;
+        renderSpectrogram();
+      });
+
+      audio.addEventListener('ended', () => {
+        isPlaying = false;
+        playBtn.textContent = '▶';
+      });
+
+      playBtn.addEventListener('click', () => {
+        if (!audio.src) return;
+        if (isPlaying) {
+          audio.pause();
+          playBtn.textContent = '▶';
+        } else {
+          audio.play();
+          playBtn.textContent = '❚❚';
+        }
+        isPlaying = !isPlaying;
+      });
+
+      progressTrack.addEventListener('click', (e) => {
+        if (!audio.duration) return;
+        const rect = progressTrack.getBoundingClientRect();
+        const pos = (e.clientX - rect.left) / rect.width;
+        audio.currentTime = pos * audio.duration;
+      });
+    }
+
+    function loadAudioTrack(scenarioId) {
+      if (audio) {
+        audio.pause();
+        isPlaying = false;
+        playBtn.textContent = '▶';
+      }
+      audio.src = `/api/audio?id=${encodeURIComponent(scenarioId)}`;
+      audio.load();
+    }
+
+    function formatTime(sec) {
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+    }
+
+    // Tab Navigation
+    function setupTabs() {
+      tabMap.addEventListener('click', () => setTab('map'));
+      tabSpec.addEventListener('click', () => setTab('spec'));
+      tabSplit.addEventListener('click', () => setTab('split'));
+    }
+
+    function setTab(tab) {
+      activeTab = tab;
+      tabMap.classList.toggle('active', tab === 'map');
+      tabSpec.classList.toggle('active', tab === 'spec');
+      tabSplit.classList.toggle('active', tab === 'split');
+
+      if (tab === 'map') {
+        paneMap.style.display = 'flex';
+        paneMap.style.height = '100%';
+        paneSpec.style.display = 'none';
+      } else if (tab === 'spec') {
+        paneMap.style.display = 'none';
+        paneSpec.style.display = 'flex';
+        paneSpec.style.height = '100%';
+      } else { // split
+        paneMap.style.display = 'flex';
+        paneMap.style.height = '50%';
+        paneSpec.style.display = 'flex';
+        paneSpec.style.height = '50%';
+      }
+
+      resizeCanvases();
+      renderActiveViews();
+    }
+
+    function resizeCanvases() {
+      const dpr = window.devicePixelRatio || 1;
+      [mapCanvas, specCanvas].forEach(c => {
+        const rect = c.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          c.width = rect.width * dpr;
+          c.height = rect.height * dpr;
+          const ctx = c.getContext('2d');
+          ctx.resetTransform();
+          ctx.scale(dpr, dpr);
+        }
+      });
+    }
+
+    function renderActiveViews() {
+      if (activeTab === 'map' || activeTab === 'split') renderMap();
+      if (activeTab === 'spec' || activeTab === 'split') renderSpectrogram();
+    }
+
+    // Map Interactions
+    function setupMapInteractions() {
+      mapCanvas.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        dragStart = { x: e.clientX - mapPan.x, y: e.clientY - mapPan.y };
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        mapPan.x = e.clientX - dragStart.x;
+        mapPan.y = e.clientY - dragStart.y;
+        renderMap();
+      });
+
+      window.addEventListener('mouseup', () => { isDragging = false; });
+
+      mapCanvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const zoomFactor = e.deltaY < 0 ? 1.15 : 0.85;
+        mapZoom = Math.min(Math.max(mapZoom * zoomFactor, 0.4), 8.0);
+        renderMap();
+      });
+    }
+
+    // Canvas 1: Tactical Geodetic Map Renderer
+    function renderMap() {
+      const sc = currentScenario;
+      if (!sc) return;
+
+      const w = mapCanvas.getBoundingClientRect().width;
+      const h = mapCanvas.getBoundingClientRect().height;
+      if (w <= 0 || h <= 0) return;
+
+      mapCtx.clearRect(0, 0, w, h);
+
+      // Coordinate Projector (Equirectangular local projection)
+      const b = sc.bounds;
+      const lonSpan = Math.abs(b.east - b.west) || 0.5;
+      const latSpan = Math.abs(b.north - b.south) || 0.4;
+      const centerLon = (b.west + b.east) / 2;
+      const centerLat = (b.south + b.north) / 2;
+
+      function toScreen(lat, lon) {
+        const x = (w / 2) + ((lon - centerLon) / lonSpan) * (w * 0.75 * mapZoom) + mapPan.x;
+        const y = (h / 2) - ((lat - centerLat) / latSpan) * (h * 0.75 * mapZoom) + mapPan.y;
+        return { x, y };
+      }
+
+      // Draw WGS84 coordinate grid lines
+      mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+      mapCtx.lineWidth = 1;
+      const nGrid = 6;
+      for (let i = 0; i <= nGrid; i++) {
+        const la = b.south + (i / nGrid) * latSpan;
+        const p1 = toScreen(la, b.west);
+        const p2 = toScreen(la, b.east);
+        mapCtx.beginPath();
+        mapCtx.moveTo(p1.x, p1.y);
+        mapCtx.lineTo(p2.x, p2.y);
+        mapCtx.stroke();
+
+        mapCtx.fillStyle = 'rgba(148, 163, 184, 0.4)';
+        mapCtx.font = '10px ui-monospace';
+        mapCtx.fillText(`${la.toFixed(2)}°`, 12, p1.y - 3);
+      }
+
+      for (let i = 0; i <= nGrid; i++) {
+        const lo = b.west + (i / nGrid) * lonSpan;
+        const p1 = toScreen(b.south, lo);
+        const p2 = toScreen(b.north, lo);
+        mapCtx.beginPath();
+        mapCtx.moveTo(p1.x, p1.y);
+        mapCtx.lineTo(p2.x, p2.y);
+        mapCtx.stroke();
+
+        mapCtx.fillStyle = 'rgba(148, 163, 184, 0.4)';
+        mapCtx.font = '10px ui-monospace';
+        mapCtx.fillText(`${lo.toFixed(2)}°`, p1.x + 3, h - 12);
+      }
+
+      // Draw Candidate Heatmap Basins
+      if (sc.candidates) {
+        sc.candidates.forEach(c => {
+          const pt = toScreen(c.lat, c.lon);
+          const intensity = Math.min(c.score / 50.0, 1.0);
+          mapCtx.fillStyle = `rgba(245, 158, 11, ${0.15 + intensity * 0.6})`;
+          mapCtx.beginPath();
+          mapCtx.arc(pt.x, pt.y, 4 * mapZoom, 0, Math.PI * 2);
+          mapCtx.fill();
+        });
+      }
+
+      // Draw Flight Tracks and Audibility Corridors
+      (sc.flights || []).forEach(fl => {
+        const wps = fl.waypoints || [];
+        if (wps.length < 2) return;
+
+        // Audibility corridor ribbon
+        if (fl.is_target) {
+          mapCtx.strokeStyle = 'rgba(56, 189, 248, 0.12)';
+          mapCtx.lineWidth = 36 * mapZoom;
+          mapCtx.lineCap = 'round';
+          mapCtx.beginPath();
+          wps.forEach((wp, idx) => {
+            const pt = toScreen(wp.lat, wp.lon);
+            if (idx === 0) mapCtx.moveTo(pt.x, pt.y);
+            else mapCtx.lineTo(pt.x, pt.y);
+          });
+          mapCtx.stroke();
+        }
+
+        // Spline Track
+        mapCtx.strokeStyle = fl.is_target ? '#38bdf8' : 'rgba(148, 163, 184, 0.35)';
+        mapCtx.lineWidth = fl.is_target ? 2.5 : 1;
+        mapCtx.beginPath();
+        wps.forEach((wp, idx) => {
+          const pt = toScreen(wp.lat, wp.lon);
+          if (idx === 0) mapCtx.moveTo(pt.x, pt.y);
+          else mapCtx.lineTo(pt.x, pt.y);
+        });
+        mapCtx.stroke();
+
+        // Direction Chevrons & Callout
+        const midIdx = Math.floor(wps.length / 2);
+        const midPt = toScreen(wps[midIdx].lat, wps[midIdx].lon);
+        mapCtx.fillStyle = fl.is_target ? '#38bdf8' : 'rgba(148, 163, 184, 0.6)';
+        mapCtx.font = '11px ui-monospace';
+        mapCtx.fillText(`${fl.callsign} (${fl.aircraft})`, midPt.x + 8, midPt.y - 8);
+
+        // CPA tick
+        if (fl.cpa) {
+          const cpaPt = toScreen(fl.cpa.lat, fl.cpa.lon);
+          mapCtx.fillStyle = '#10b981';
+          mapCtx.beginPath();
+          mapCtx.arc(cpaPt.x, cpaPt.y, 4, 0, Math.PI * 2);
+          mapCtx.fill();
+        }
+      });
+
+      // Ground Truth Marker
+      const truthPt = toScreen(sc.truth.lat, sc.truth.lon);
+      mapCtx.strokeStyle = '#f43f5e';
+      mapCtx.lineWidth = 2;
+      mapCtx.beginPath();
+      mapCtx.arc(truthPt.x, truthPt.y, 7, 0, Math.PI * 2);
+      mapCtx.stroke();
+      mapCtx.beginPath();
+      mapCtx.moveTo(truthPt.x - 11, truthPt.y);
+      mapCtx.lineTo(truthPt.x + 11, truthPt.y);
+      mapCtx.moveTo(truthPt.x, truthPt.y - 11);
+      mapCtx.lineTo(truthPt.x, truthPt.y + 11);
+      mapCtx.stroke();
+      mapCtx.fillStyle = '#f43f5e';
+      mapCtx.font = '11px var(--font-sans)';
+      mapCtx.fillText("Truth Reference", truthPt.x + 12, truthPt.y + 4);
+
+      // Estimated Fix Reticle
+      const fixPt = toScreen(sc.fix.lat, sc.fix.lon);
+
+      // 95% Uncertainty radius circle
+      const mPerDegLat = 111139.0;
+      const radiusPixels = (sc.radius_m / mPerDegLat / latSpan) * (h * 0.75 * mapZoom);
+      mapCtx.strokeStyle = sc.status === 'ambiguous' ? 'rgba(245, 158, 11, 0.45)' : 'rgba(16, 185, 129, 0.35)';
+      mapCtx.lineWidth = 1.5;
+      mapCtx.setLineDash([4, 4]);
+      mapCtx.beginPath();
+      mapCtx.arc(fixPt.x, fixPt.y, Math.max(radiusPixels, 14), 0, Math.PI * 2);
+      mapCtx.stroke();
+      mapCtx.setLineDash([]);
+
+      // Fix Center Reticle
+      mapCtx.strokeStyle = sc.status === 'ambiguous' ? '#f59e0b' : '#10b981';
+      mapCtx.lineWidth = 2;
+      mapCtx.beginPath();
+      mapCtx.arc(fixPt.x, fixPt.y, 5, 0, Math.PI * 2);
+      mapCtx.stroke();
+      mapCtx.fillStyle = sc.status === 'ambiguous' ? '#f59e0b' : '#10b981';
+      mapCtx.font = 'bold 12px var(--font-sans)';
+      mapCtx.fillText(`Fix [${sc.status.toUpperCase()}]`, fixPt.x + 12, fixPt.y - 6);
+
+      // Error offset vector to truth
+      if (sc.error_m) {
+        mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        mapCtx.lineWidth = 1;
+        mapCtx.setLineDash([2, 2]);
+        mapCtx.beginPath();
+        mapCtx.moveTo(fixPt.x, fixPt.y);
+        mapCtx.lineTo(truthPt.x, truthPt.y);
+        mapCtx.stroke();
+        mapCtx.setLineDash([]);
+
+        const midVec = { x: (fixPt.x + truthPt.x) / 2, y: (fixPt.y + truthPt.y) / 2 };
+        mapCtx.fillStyle = '#fff';
+        mapCtx.font = '10px ui-monospace';
+        mapCtx.fillText(`Δ ${sc.error_m.toFixed(0)}m`, midVec.x + 4, midVec.y - 4);
+      }
+    }
+
+    // Canvas 2: Spectrogram & Doppler Ridge Renderer
+    function renderSpectrogram() {
+      const sc = currentScenario;
+      if (!sc) return;
+
+      const w = specCanvas.getBoundingClientRect().width;
+      const h = specCanvas.getBoundingClientRect().height;
+      if (w <= 0 || h <= 0) return;
+
+      specCtx.clearRect(0, 0, w, h);
+
+      // Frequency range: 0 to 400 Hz
+      const maxFreq = 400.0;
+      const padLeft = 45;
+      const padBottom = 25;
+      const graphW = w - padLeft - 15;
+      const graphH = h - padBottom - 15;
+
+      // Draw dark grid background
+      specCtx.fillStyle = '#05070b';
+      specCtx.fillRect(padLeft, 10, graphW, graphH);
+
+      // Frequency Grid lines
+      specCtx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+      specCtx.lineWidth = 1;
+      const fSteps = [50, 100, 150, 200, 250, 300, 350, 400];
+      fSteps.forEach(f => {
+        const y = 10 + graphH - (f / maxFreq) * graphH;
+        specCtx.beginPath();
+        specCtx.moveTo(padLeft, y);
+        specCtx.lineTo(padLeft + graphW, y);
+        specCtx.stroke();
+
+        specCtx.fillStyle = 'rgba(148, 163, 184, 0.6)';
+        specCtx.font = '10px ui-monospace';
+        specCtx.textAlign = 'right';
+        specCtx.fillText(`${f}Hz`, padLeft - 6, y + 3);
+      });
+
+      // Time Grid lines (0 to 160s window)
+      const tDuration = 160.0;
+      const tSteps = [0, 20, 40, 60, 80, 100, 120, 140, 160];
+      tSteps.forEach(t => {
+        const x = padLeft + (t / tDuration) * graphW;
+        specCtx.beginPath();
+        specCtx.moveTo(x, 10);
+        specCtx.lineTo(x, 10 + graphH);
+        specCtx.stroke();
+
+        specCtx.fillStyle = 'rgba(148, 163, 184, 0.6)';
+        specCtx.font = '10px ui-monospace';
+        specCtx.textAlign = 'center';
+        specCtx.fillText(`${t}s`, x, 10 + graphH + 16);
+      });
+
+      // Synthetic Ambient Spectrogram Floor (noise texture)
+      specCtx.fillStyle = 'rgba(56, 189, 248, 0.02)';
+      for (let i = 0; i < 400; i++) {
+        const rx = padLeft + Math.random() * graphW;
+        const ry = 10 + Math.random() * graphH;
+        specCtx.fillRect(rx, ry, 2, 2);
+      }
+
+      // Draw Traced Doppler Curves per Event and Harmonic Order
+      const colors = { 1: '#38bdf8', 2: '#a855f7', 3: '#ec4899' };
+      (sc.events || []).forEach(ev => {
+        (ev.curves || []).forEach(crv => {
+          const pts = crv.points || [];
+          if (pts.length < 2) return;
+
+          const color = colors[crv.order] || '#38bdf8';
+          specCtx.strokeStyle = color;
+          specCtx.lineWidth = 2.2;
+          specCtx.beginPath();
+
+          pts.forEach((p, idx) => {
+            const relT = (p[0] - (ev.t_cpa_s - 80.0));
+            const x = padLeft + (relT / tDuration) * graphW;
+            const y = 10 + graphH - (p[1] / maxFreq) * graphH;
+            if (idx === 0) specCtx.moveTo(x, y);
+            else specCtx.lineTo(x, y);
+          });
+          specCtx.stroke();
+
+          // Harmonic label at end of curve
+          const lastP = pts[pts.length - 1];
+          const relT = (lastP[0] - (ev.t_cpa_s - 80.0));
+          const lx = padLeft + (relT / tDuration) * graphW;
+          const ly = 10 + graphH - (lastP[1] / maxFreq) * graphH;
+          specCtx.fillStyle = color;
+          specCtx.font = 'bold 10px ui-monospace';
+          specCtx.textAlign = 'left';
+          specCtx.fillText(`${crv.order}× (${ev.id})`, lx + 4, ly + 3);
+        });
+
+        // CPA Marker line
+        const cpaRelT = 80.0;
+        const cpaX = padLeft + (cpaRelT / tDuration) * graphW;
+        specCtx.strokeStyle = 'rgba(16, 185, 129, 0.5)';
+        specCtx.lineWidth = 1;
+        specCtx.setLineDash([3, 3]);
+        specCtx.beginPath();
+        specCtx.moveTo(cpaX, 10);
+        specCtx.lineTo(cpaX, 10 + graphH);
+        specCtx.stroke();
+        specCtx.setLineDash([]);
+        specCtx.fillStyle = '#10b981';
+        specCtx.font = '10px ui-monospace';
+        specCtx.textAlign = 'center';
+        specCtx.fillText(`CPA ${ev.id}`, cpaX, 22);
+      });
+
+      // Audio Playhead Scrubber Line
+      if (audio && audio.duration > 0) {
+        const curPct = audio.currentTime / audio.duration;
+        const playX = padLeft + curPct * graphW;
+        specCtx.strokeStyle = '#fff';
+        specCtx.lineWidth = 2;
+        specCtx.beginPath();
+        specCtx.moveTo(playX, 10);
+        specCtx.lineTo(playX, 10 + graphH);
+        specCtx.stroke();
+      }
+    }
+
+    // Inversion Pipeline Simulation Modal
+    function triggerInversionAnimation() {
+      const overlay = document.getElementById('inversionOverlay');
+      const progressEl = document.getElementById('pipelineProgress');
+      const stagesEl = document.getElementById('pipelineStages');
+
+      const stages = [
+        "1. STFT (4096-pt) & Median/MAD Spectral Whitening",
+        "2. Physics-Bounded Viterbi Doppler Ridge Tracing",
+        "3. Harmonic Family Grouping (k·f0 integer-ratio)",
+        "4. Flight-Centric Audibility Corridor Pre-Filter",
+        "5. Inter-Event Time-Offset Hyperbolic Join",
+        "6. Silence & Negative-Information Verification",
+        "7. Retarded-Time Exact Forward Model Evaluation",
+        "8. Joint Clock Offset (-0.05s) and Drift Fit",
+        "9. Geographic Basin Clustering & Decision Audit"
+      ];
+
+      stagesEl.innerHTML = '';
+      stages.forEach((stg, i) => {
+        const div = document.createElement('div');
+        div.className = 'stage-item';
+        div.id = `stage-${i}`;
+        div.innerHTML = `<span class="stage-icon">○</span><span>${stg}</span>`;
+        stagesEl.appendChild(div);
+      });
+
+      overlay.classList.add('active');
+
+      let currentStep = 0;
+      const interval = setInterval(() => {
+        if (currentStep > 0) {
+          const prev = document.getElementById(`stage-${currentStep - 1}`);
+          if (prev) {
+            prev.className = 'stage-item done';
+            prev.querySelector('.stage-icon').textContent = '✓';
+          }
+        }
+
+        if (currentStep < stages.length) {
+          const cur = document.getElementById(`stage-${currentStep}`);
+          if (cur) {
+            cur.className = 'stage-item active';
+            cur.querySelector('.stage-icon').textContent = '◐';
+          }
+          const pct = Math.round(((currentStep + 1) / stages.length) * 100);
+          progressEl.textContent = `${pct}%`;
+          currentStep++;
+        } else {
+          clearInterval(interval);
+          setTimeout(() => {
+            overlay.classList.remove('active');
+            renderMap();
+          }, 350);
+        }
+      }, 160);
+    }
+
+    // Initialize on load
+    window.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>

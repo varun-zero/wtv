@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta charset="utf-8">
+<title>SkyPrint validation</title>
+<style>
+body{font-family:ui-sans-serif,system-ui;margin:2rem auto;max-width:62rem;
+color:#111;background:#fafafa} h1{font-size:1.35rem}
+table{border-collapse:collapse;width:100%;font-size:.82rem}
+td,th{border:1px solid #ddd;padding:.3rem .5rem;text-align:left}
+th{background:#eee} .sum{font-size:1.05rem;margin:.6rem 0 1rem}
+.note{color:#555;font-size:.85rem}
+</style></head><body>
+<h1>SkyPrint — end-to-end validation (synthetic worlds)</h1>
+<p class="sum"><b>8/9 cases located, median error 305 m</b></p>
+<table><tr><th>case</th><th>decision</th><th>error (m)</th><th>radius (m)</th>
+<th>score</th><th>flights</th><th>clock (off/drift)</th><th>events</th>
+<th>time</th></tr>
+<tr><td>A-crossing-baseline</td><td><b>located</b></td><td>470</td><td>1601.7</td><td>48.52</td><td>SKY02, SKY01</td><td>-0.05s / 0.0ppm</td><td>2 (f0 [116.9, 79.1])</td><td>153.7+11.7s</td></tr><tr><td>A1-mp3-48k</td><td><b>located</b></td><td>470</td><td>1601.7</td><td>48.56</td><td>SKY02, SKY01</td><td>-0.05s / 0.0ppm</td><td>2 (f0 [116.9, 79.1])</td><td>152.2+11.7s</td></tr><tr><td>A2-clock-drift-10ppm</td><td><b>located</b></td><td>467</td><td>1601.7</td><td>48.57</td><td>SKY02, SKY01</td><td>-0.05s / 0.0ppm</td><td>2 (f0 [116.9, 79.1])</td><td>155.1+11.5s</td></tr><tr><td>A3-highpass-80hz</td><td><b>located</b></td><td>305</td><td>1514.0</td><td>52.46</td><td>SKY02, SKY01</td><td>-0.05s / 0.0ppm</td><td>2 (f0 [39.0, 78.9])</td><td>155.0+11.5s</td></tr><tr><td>B-parallel-26s</td><td><b>ambiguous</b></td><td>520</td><td>1155.2</td><td>37.26</td><td>SKY01, SKY02</td><td>5.55s / -0.0ppm</td><td>2 (f0 [78.7, 113.7])</td><td>50.0+16.9s</td></tr><tr><td>G1-polar-svalbard</td><td><b>located</b></td><td>117</td><td>1482.8</td><td>51.79</td><td>SKY02, SKY01</td><td>-0.15s / -0.0ppm</td><td>2 (f0 [38.6, 79.5])</td><td>110.8+8.9s</td></tr><tr><td>G2-dateline-fiji</td><td><b>located</b></td><td>221</td><td>1012.0</td><td>51.62</td><td>SKY02, SKY01</td><td>-0.05s / 0.0ppm</td><td>2 (f0 [57.9, 79.5])</td><td>114.6+95.8s</td></tr><tr><td>G3-southern-ocean</td><td><b>located</b></td><td>134</td><td>1572.4</td><td>52.12</td><td>SKY02, SKY01</td><td>-0.05s / 0.0ppm</td><td>2 (f0 [38.6, 79.5])</td><td>119.1+29.0s</td></tr><tr><td>G4-equatorial-pacific</td><td><b>located</b></td><td>27</td><td>1482.4</td><td>52.46</td><td>SKY02, SKY01</td><td>-0.1s / 0.0ppm</td><td>2 (f0 [38.6, 79.5])</td><td>123.7+58.7s</td></tr></table>
+<p class="note">World A: two propeller flyovers on crossing headings
+(eastbound C172-class at 100 m/s, westbound SR22-class at 110 m/s),
+CPA arrivals ~500 s apart, distractor flights, 3 m/s wind; 800 s of
+8 kHz audio rendered with retarded-time acoustics, ISO 9613-1
+absorption, and RPM wander. Degradations applied to the rendered audio
+only. World B: parallel headings 26 s apart — intrinsically degenerate
+along the shared corridor; an honest system must report that ambiguity
+rather than guess. Global sweep (G1-G4): the same crossing-geometry
+scenario re-rendered at 78.2 N (Svalbard), across the dateline at 179 E
+inside a wrapped search bounding box, in the Southern Ocean at 54.5 S,
+and on the equatorial Pacific — exercising polar/dateline geodesy and
+hemisphere-flipped ENU frames. Truth per case: A/B at 37.4000 N
+122.3000 W; G1-G4 at the coordinates named in each case label.</p>
+</body></html>
