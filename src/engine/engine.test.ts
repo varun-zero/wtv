@@ -27,14 +27,20 @@ import {
   applyAircraftBandBoost,
   applyClockDrift,
   applyHighPassFilter,
+  applyNotchFilter,
+  applyTrafficTransientSuppression,
+  computeEventAcousticMetrics,
   computeSpectrogram,
+  fitDopplerEventFromPoints,
   fitDopplerEventFromRidge,
   synthesizeScenarioAudio,
   traceDopplerRidge,
 } from './dsp';
 import {
   clusterCandidatesIntoBasins,
+  compute100mHeatmapGrid,
   computeEstimated3dTrajectory,
+  heatmapColorGreenToRed,
   isBpfCompatible,
   runGeolocationInversion,
   sortFlights,
@@ -389,4 +395,134 @@ test('Estimated 3D flight path trajectory computes elevated extrusion, slant ran
   assert.ok(traj!.maxElevationDeg > 75);
   assert.ok(traj!.cpaPoint.elevatedLat > traj!.cpaPoint.lat);
 });
+
+test('100m spacing dot-grid heatmap enforces exact 100m neighbor distance and Green-to-Red color ramp', () => {
+  const grid = compute100mHeatmapGrid({
+    fix: { lat: 37.4, lon: -122.3 },
+    baseScore: 48.5,
+    radiusM: 650.0,
+    basins: [
+      {
+        rank: 1,
+        lat: 37.4,
+        lon: -122.3,
+        score: 48.5,
+        ev1Score: 25.0,
+        ev2Score: 23.5,
+        delta: 0,
+        flights: 'SKY01',
+        clock: '0.00s / 0.0ppm',
+        clockOffsetS: 0,
+        clockDriftPpm: 0,
+        radiusM: 650,
+        memberCount: 12,
+      },
+    ],
+    stepMeters: 100.0,
+    halfSpanSteps: 5,
+  });
+
+  // 11 x 11 = 121 grid dots
+  assert.equal(grid.length, 121);
+
+  const centerPt = grid.find((p) => p.gridRow === 0 && p.gridCol === 0);
+  const northNeighbor = grid.find((p) => p.gridRow === 1 && p.gridCol === 0);
+  const eastNeighbor = grid.find((p) => p.gridRow === 0 && p.gridCol === 1);
+
+  assert.ok(centerPt && northNeighbor && eastNeighbor);
+  assert.equal(centerPt!.normalizedProb, 1.0);
+
+  const distNorthM = greatCircleDistance(
+    centerPt!.lat,
+    centerPt!.lon,
+    northNeighbor!.lat,
+    northNeighbor!.lon
+  );
+  const distEastM = greatCircleDistance(
+    centerPt!.lat,
+    centerPt!.lon,
+    eastNeighbor!.lat,
+    eastNeighbor!.lon
+  );
+
+  assert.ok(
+    Math.abs(distNorthM - 100.0) < 0.6,
+    `Expected 100m north spacing, got ${distNorthM}`
+  );
+  assert.ok(
+    Math.abs(distEastM - 100.0) < 0.6,
+    `Expected 100m east spacing, got ${distEastM}`
+  );
+
+  // Verify Green-to-Red color endpoints
+  assert.equal(heatmapColorGreenToRed(0.0), 'rgb(16, 185, 129)');
+  assert.equal(heatmapColorGreenToRed(1.0), 'rgb(239, 68, 68)');
+});
+
+test('Wavelength calculator, ground traffic/car Doppler classifier, notch filter, and point-pick fitter', () => {
+  // 1. Aircraft curve: f0 = 85 Hz, v = 102 m/s, r0 = 1500 m, c = 340 m/s
+  const aircraftMetrics = computeEventAcousticMetrics(
+    { f0_hz: 85.0, speed_ms: 102.0, slant_m: 1500.0 },
+    340.0
+  );
+  assert.ok(Math.abs(aircraftMetrics.wavelength0_m - 4.0) < 1e-6);
+  assert.ok(aircraftMetrics.wavelengthApp_m < aircraftMetrics.wavelength0_m);
+  assert.ok(aircraftMetrics.wavelengthRec_m > aircraftMetrics.wavelength0_m);
+  assert.equal(aircraftMetrics.sourceClass, 'aircraft');
+
+  // 2. Passing car curve: f0 = 70 Hz, v = 26 m/s (93 km/h), r0 = 35 m
+  const carMetrics = computeEventAcousticMetrics(
+    { f0_hz: 70.0, speed_ms: 26.0, slant_m: 35.0 },
+    340.0
+  );
+  assert.equal(carMetrics.sourceClass, 'ground_traffic');
+  assert.ok(carMetrics.rejectionReason !== null);
+
+  // 3. Geolocation solver automatically rejects the car curve while keeping the aircraft curve
+  const inv = runGeolocationInversion({
+    bounds: { west: -122.5, south: 37.2, east: -122.1, north: 37.6 },
+    atmos: { temp_c: 15, wind_e_ms: 0, wind_n_ms: 0 },
+    flights: [],
+    events: [
+      {
+        id: 'CAR01',
+        f0_hz: 70.0,
+        speed_ms: 26.0,
+        slant_m: 35.0,
+        t_cpa_s: 12.0,
+        snr_db: 40.0,
+        orders: [1, 2],
+        curves: [],
+      },
+    ],
+    rejectGroundTraffic: true,
+  });
+  assert.equal(inv.status, 'inconclusive');
+  assert.equal(inv.rejectedTrafficEventIds.join(','), 'CAR01');
+
+  // 4. Interactive point-pick fitter & Notch filter
+  const fitted = fitDopplerEventFromPoints(
+    [
+      { t: 5.0, f: 112.0 },
+      { t: 20.0, f: 85.0 },
+      { t: 35.0, f: 68.0 },
+    ],
+    'PICK01',
+    340.0
+  );
+  assert.ok(fitted !== null);
+  assert.ok(fitted!.f0_hz > 75 && fitted!.f0_hz < 95);
+
+  const audio = synthesizeScenarioAudio(
+    [{ f0_hz: 85, speed_ms: 100, slant_m: 1400, t_cpa_s: 20 }],
+    10.0,
+    4000
+  );
+  const notched = applyNotchFilter(audio, 4000, 60.0, 10.0);
+  assert.equal(notched.length, audio.length);
+  const spec = computeSpectrogram(notched, 4000, 512, 128, 400.0);
+  const suppressed = applyTrafficTransientSuppression(spec);
+  assert.equal(suppressed.whitened.length, spec.whitened.length);
+});
+
 

@@ -4,15 +4,17 @@ import { GeoBounds, deltaLonSigned, normalizeLon } from '../engine/geo';
 import {
   BasinSummary,
   CandidatePoint,
+  HeatmapGridPoint,
   ScenarioFlight,
   computeEstimated3dTrajectory,
+  heatmapColorGreenToRed,
 } from '../engine/solver';
 import { ensureFlightWaypoints } from '../engine/acoustics';
 import {
   Box,
   Crosshair,
   Globe,
-  Layers,
+  Grid,
   Moon,
   Mountain,
   RotateCcw,
@@ -36,7 +38,7 @@ export const MAP_STYLES: Record<MapStyleId, MapStyleConfig> = {
   dark: {
     id: 'dark',
     label: 'Dark Mode',
-    shortDesc: 'OSM Tactical Dark',
+    shortDesc: 'Achromatic Carbon C2',
     url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
     attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19,
@@ -68,6 +70,7 @@ interface GeodeticMapViewportProps {
   status: string;
   flights: ScenarioFlight[];
   candidates: CandidatePoint[];
+  heatmapGrid?: HeatmapGridPoint[];
   basins: BasinSummary[];
   selectedBasin: BasinSummary | null;
   onSelectBasin: (basin: BasinSummary) => void;
@@ -87,6 +90,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
   status,
   flights,
   candidates,
+  heatmapGrid = [],
   basins,
   selectedBasin,
   onSelectBasin,
@@ -101,10 +105,13 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
   const mapInstanceRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const overlayGroupRef = useRef<L.LayerGroup | null>(null);
+  const canvasRendererRef = useRef<L.Canvas | null>(null);
 
   const [mapStyle, setMapStyle] = useState<MapStyleId>('dark');
+  const [show100mHeatmap, setShow100mHeatmap] = useState<boolean>(true);
+  const [invertHeatmapRamp, setInvertHeatmapRamp] = useState<boolean>(false);
   const [showCorridors, setShowCorridors] = useState<boolean>(true);
-  const [showGrid, setShowGrid] = useState<boolean>(true);
+  const [showGrid, setShowGrid] = useState<boolean>(false);
   const [cursorGeo, setCursorGeo] = useState<{
     lat: number;
     lon: number;
@@ -142,11 +149,15 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
     const centerLat = (bounds.south + bounds.north) * 0.5;
     const centerLon = (bounds.west + bounds.east) * 0.5;
 
+    const canvasRenderer = L.canvas({ padding: 0.5 });
+    canvasRendererRef.current = canvasRenderer;
+
     const map = L.map(container, {
       center: [centerLat, centerLon],
-      zoom: 11,
+      zoom: 12,
       zoomControl: false,
       attributionControl: true,
+      preferCanvas: true,
     });
 
     const cfg = MAP_STYLES[mapStyle];
@@ -172,7 +183,6 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
     tileLayerRef.current = tileLayer;
     overlayGroupRef.current = overlayGroup;
 
-    // Fit initial bounds
     map.fitBounds(
       [
         [bounds.south, bounds.west],
@@ -192,6 +202,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
       mapInstanceRef.current = null;
       tileLayerRef.current = null;
       overlayGroupRef.current = null;
+      canvasRendererRef.current = null;
     };
   }, []);
 
@@ -211,13 +222,14 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
     tileLayerRef.current = nextLayer;
   }, [mapStyle]);
 
-  // Render search bounds, flights, 3D trajectory extrusion, candidates, basins, and fix
+  // Render search bounds, 100m heatmap dot-grid, flights, 3D trajectory extrusion, basins, and fix
   useEffect(() => {
     const group = overlayGroupRef.current;
     if (!group) return;
     group.clearLayers();
 
     const isBrightBasemap = mapStyle === 'terrain';
+    const canvasRenderer = canvasRendererRef.current || undefined;
 
     // 1. Search Region Bounding Box
     L.rectangle(
@@ -226,36 +238,68 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
         [bounds.north, bounds.east],
       ],
       {
-        color: isBrightBasemap ? '#0284c7' : '#38bdf8',
-        weight: isBrightBasemap ? 1.8 : 1.2,
-        dashArray: '5, 5',
-        fillColor: '#38bdf8',
-        fillOpacity: isBrightBasemap ? 0.05 : 0.03,
+        color: isBrightBasemap ? '#18181b' : '#737373',
+        weight: isBrightBasemap ? 1.5 : 1.0,
+        dashArray: '4, 4',
+        fillColor: '#ffffff',
+        fillOpacity: isBrightBasemap ? 0.04 : 0.02,
         interactive: false,
       }
     ).addTo(group);
 
-    // 2. Candidate Grid Points
+    // 2A. Coarse Regional Candidate Grid Points (optional background grid)
     if (showGrid) {
       candidates.forEach((c) => {
         const normScore = Math.min(1.0, Math.max(0.05, c.score / 52.0));
         const color =
           c.passedSilence === false
-            ? '#64748b'
+            ? '#52525b'
             : normScore > 0.72
             ? '#10b981'
             : '#f59e0b';
         const opacity =
-          c.passedSilence === false ? 0.25 : 0.3 + normScore * 0.55;
+          c.passedSilence === false ? 0.25 : 0.35 + normScore * 0.55;
 
         L.circleMarker([c.lat, c.lon], {
+          renderer: canvasRenderer,
           radius: c.passedSilence === false ? 2.5 : 3.5,
-          color: isBrightBasemap ? '#0f172a' : 'transparent',
+          color: isBrightBasemap ? '#000000' : 'transparent',
           weight: isBrightBasemap ? 0.75 : 0,
           fillColor: color,
           fillOpacity: opacity,
           interactive: false,
         }).addTo(group);
+      });
+    }
+
+    // 2B. 100-Meter Spacing Green-to-Red Dot-Grid Probability Heatmap
+    if (show100mHeatmap && heatmapGrid.length > 0 && status !== 'inconclusive') {
+      heatmapGrid.forEach((pt) => {
+        const dotColor = heatmapColorGreenToRed(
+          pt.normalizedProb,
+          invertHeatmapRamp
+        );
+        const isCore = pt.normalizedProb >= 0.75;
+        const dotMarker = L.circleMarker([pt.lat, pt.lon], {
+          renderer: canvasRenderer,
+          radius: isCore ? 4.2 : 3.2,
+          color: isBrightBasemap ? '#000000' : '#050505',
+          weight: 0.8,
+          fillColor: dotColor,
+          fillOpacity: 0.38 + pt.normalizedProb * 0.58,
+        }).addTo(group);
+
+        dotMarker.bindTooltip(
+          `100m Grid [${pt.gridRow >= 0 ? '+' : ''}${pt.gridRow * 100}m N, ${
+            pt.gridCol >= 0 ? '+' : ''
+          }${pt.gridCol * 100}m E] · P=${(pt.normalizedProb * 100).toFixed(
+            0
+          )}% · Score ${pt.score.toFixed(1)}`,
+          {
+            direction: 'top',
+            className: 'skyprint-tooltip',
+          }
+        );
       });
     }
 
@@ -268,31 +312,31 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
 
       if (fl.is_target && showCorridors) {
         L.polyline(latlngs, {
-          color: isBrightBasemap ? '#0284c7' : '#06b6d4',
+          color: '#10b981',
           weight: 28,
-          opacity: isBrightBasemap ? 0.2 : 0.14,
-          lineCap: 'round',
+          opacity: isBrightBasemap ? 0.14 : 0.08,
+          lineCap: 'butt',
           interactive: false,
         }).addTo(group);
       }
 
-      // High-contrast dark casing on Terrain/Satellite for crisp legibility
       if (mapStyle !== 'dark') {
         L.polyline(latlngs, {
-          color: '#05080f',
+          color: '#000000',
           weight: fl.is_target ? 4.5 : 3,
-          opacity: 0.65,
+          opacity: 0.75,
           interactive: false,
         }).addTo(group);
       }
 
       const trackLine = L.polyline(latlngs, {
-        color: isSelected && show3dTrajectory
-          ? '#94a3b8'
-          : fl.is_target
-          ? '#22d3ee'
-          : '#94a3b8',
-        weight: fl.is_target ? 2.5 : 1.5,
+        color:
+          isSelected && show3dTrajectory
+            ? '#737373'
+            : fl.is_target
+            ? '#fafafa'
+            : '#737373',
+        weight: fl.is_target ? 2.0 : 1.5,
         dashArray:
           isSelected && show3dTrajectory
             ? '3, 5'
@@ -306,7 +350,6 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
         trackLine.on('click', () => onSelectFlight(fl.id));
       }
 
-      // Place callsign label near the outer entry point of the track so it never collides with the central Fix
       const entryWp = wps[Math.min(wps.length - 1, 2)];
       const entryMarker = L.circleMarker([entryWp.lat, entryWp.lon], {
         radius: 2,
@@ -324,7 +367,6 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
         }
       );
 
-      // Animated aircraft marker along flight spline
       const progress =
         duration > 0 ? Math.min(1, Math.max(0, currentTime / duration)) : 0.5;
       const wpFloatIdx = progress * (wps.length - 1);
@@ -337,10 +379,10 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
       );
 
       L.circleMarker([curLat, curLon], {
-        radius: fl.is_target ? 5 : 3.5,
-        color: '#05080f',
+        radius: fl.is_target ? 4.5 : 3.5,
+        color: '#000000',
         weight: 1.5,
-        fillColor: fl.is_target ? '#38bdf8' : '#64748b',
+        fillColor: fl.is_target ? '#ffffff' : '#737373',
         fillOpacity: 1,
       }).addTo(group);
     });
@@ -354,19 +396,17 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
         p.elevatedLon,
       ]);
 
-      // 3D Vertical Curtain Polygon between ground track and elevated 3D flight path
       const curtainRing: [number, number][] = [
         ...groundCoords,
         ...[...elevatedCoords].reverse(),
       ];
       L.polygon(curtainRing, {
         color: 'transparent',
-        fillColor: '#a855f7',
-        fillOpacity: mapStyle === 'dark' ? 0.18 : 0.25,
+        fillColor: '#ff4f00',
+        fillOpacity: mapStyle === 'dark' ? 0.16 : 0.22,
         interactive: false,
       }).addTo(group);
 
-      // Vertical Altitude Drop-Pillars connecting 3D trajectory down to ground shadow
       pts.forEach((p, idx) => {
         if (idx % 3 === 0 || idx === pts.length - 1) {
           L.polyline(
@@ -375,7 +415,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
               [p.elevatedLat, p.elevatedLon],
             ],
             {
-              color: '#c084fc',
+              color: '#ff4f00',
               weight: 1.2,
               dashArray: '2, 3',
               opacity: 0.75,
@@ -385,22 +425,20 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
         }
       });
 
-      // Elevated 3D Flight Path Casing & Ribbon
       L.polyline(elevatedCoords, {
-        color: '#05080f',
+        color: '#000000',
         weight: 5,
-        opacity: 0.75,
+        opacity: 0.8,
         interactive: false,
       }).addTo(group);
 
       L.polyline(elevatedCoords, {
-        color: '#c084fc',
-        weight: 3,
+        color: '#ff4f00',
+        weight: 2.5,
         opacity: 1,
         interactive: false,
       }).addTo(group);
 
-      // 3D Acoustic Slant-Range Vector from 3D CPA Point to Ground Receiver
       const cpaPt = active3dTrajectory.cpaPoint;
       L.polyline(
         [
@@ -409,7 +447,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
         ],
         {
           color: '#f59e0b',
-          weight: 2,
+          weight: 1.8,
           dashArray: '4, 4',
           opacity: 0.9,
           interactive: false,
@@ -417,10 +455,10 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
       ).addTo(group);
 
       L.circleMarker([cpaPt.elevatedLat, cpaPt.elevatedLon], {
-        radius: 6,
-        color: '#05080f',
+        radius: 5.5,
+        color: '#000000',
         weight: 2,
-        fillColor: '#c084fc',
+        fillColor: '#ff4f00',
         fillOpacity: 1,
         interactive: false,
       }).addTo(group);
@@ -450,11 +488,11 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
     basins.slice(1).forEach((b) => {
       const isSelected = selectedBasin?.rank === b.rank;
       const marker = L.circleMarker([b.lat, b.lon], {
-        radius: isSelected ? 7.5 : 5.5,
-        color: isSelected ? '#f43f5e' : '#f59e0b',
+        radius: isSelected ? 7.0 : 5.0,
+        color: isSelected ? '#ffffff' : '#f59e0b',
         weight: 2,
-        fillColor: '#05080f',
-        fillOpacity: 0.85,
+        fillColor: '#000000',
+        fillOpacity: 0.9,
       }).addTo(group);
 
       marker.on('click', () => onSelectBasin(b));
@@ -470,21 +508,21 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
 
     // 5. Solved Estimated Fix + 95% Uncertainty Circle
     if (basins.length > 0 && status !== 'inconclusive') {
-      const fixColor = status === 'ambiguous' ? '#f59e0b' : '#10b981';
+      const fixColor = status === 'ambiguous' ? '#f59e0b' : '#ffffff';
 
       L.circle([fix.lat, fix.lon], {
         radius: Math.max(120, radiusM),
-        color: fixColor,
-        weight: 1.8,
+        color: '#ffffff',
+        weight: 1.5,
         dashArray: '4, 4',
-        fillColor: fixColor,
-        fillOpacity: mapStyle === 'dark' ? 0.08 : 0.14,
+        fillColor: '#ef4444',
+        fillOpacity: 0.05,
         interactive: false,
       }).addTo(group);
 
       const fixMarker = L.circleMarker([fix.lat, fix.lon], {
         radius: 6.5,
-        color: '#05080f',
+        color: '#000000',
         weight: 2,
         fillColor: fixColor,
         fillOpacity: 1,
@@ -506,9 +544,12 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
     status,
     flights,
     candidates,
+    heatmapGrid,
     basins,
     selectedBasin,
     onSelectBasin,
+    show100mHeatmap,
+    invertHeatmapRamp,
     showCorridors,
     showGrid,
     mapStyle,
@@ -533,6 +574,12 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
     );
   };
 
+  const handleZoomToHeatmapFix = () => {
+    const map = mapInstanceRef.current;
+    if (!map || basins.length === 0) return;
+    map.setView([fix.lat, fix.lon], 14, { animate: true });
+  };
+
   const handleSetBoundsFromMapView = () => {
     const map = mapInstanceRef.current;
     if (!map || !onChangeBounds) return;
@@ -546,22 +593,22 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
   };
 
   const styleIcon = (id: MapStyleId) => {
-    if (id === 'dark') return <Moon className="w-3.5 h-3.5" />;
-    if (id === 'terrain') return <Mountain className="w-3.5 h-3.5" />;
-    return <Globe className="w-3.5 h-3.5" />;
+    if (id === 'dark') return <Moon className="w-3 h-3" />;
+    if (id === 'terrain') return <Mountain className="w-3 h-3" />;
+    return <Globe className="w-3 h-3" />;
   };
 
   return (
-    <div className="flex flex-col w-full h-full bg-[#05080f] relative overflow-hidden">
-      {/* Top Toolbar */}
-      <div className="h-11 px-4 bg-[#0b101b] border-b border-slate-800/80 flex items-center justify-between gap-2 shrink-0 z-10">
-        {/* Layer Selector: Dark Mode | Terrain | Satellite */}
-        <div className="flex items-center gap-2">
+    <div className="flex flex-col w-full h-full bg-[#000000] relative overflow-hidden">
+      {/* Top Toolbar: Consolidated Flush 28px Segmented Button Groups */}
+      <div className="h-10 px-4 bg-[#0A0A0A] border-b border-[#1F1F1F] flex items-center justify-between gap-2 shrink-0 z-10 overflow-x-auto">
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Segmented Group 1: Dark Mode | Terrain | Satellite */}
           <div
             data-testid="map-layer-selector"
             role="group"
             aria-label="Map style selector"
-            className="inline-flex items-center bg-slate-950/90 p-0.5 rounded-md border border-slate-800"
+            className="inline-flex items-center border border-[#262626] divide-x divide-[#262626]"
           >
             {(Object.keys(MAP_STYLES) as MapStyleId[]).map((id) => {
               const cfg = MAP_STYLES[id];
@@ -574,10 +621,10 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
                   aria-pressed={active}
                   onClick={() => setMapStyle(id)}
                   title={`${cfg.label} (${cfg.shortDesc})`}
-                  className={`px-2.5 py-1 text-[11px] font-mono rounded flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`h-7 px-2.5 text-[11px] font-mono rounded-none flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
                     active
-                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-medium'
-                      : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                      ? 'bg-[#FFFFFF] text-[#000000] font-medium'
+                      : 'bg-[#111111] hover:bg-[#161616] text-[#A1A1AA] hover:text-[#FAFAFA]'
                   }`}
                 >
                   {styleIcon(id)}
@@ -587,58 +634,112 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
             })}
           </div>
 
-          <div className="h-4 w-px bg-slate-800 mx-0.5" />
-
-          {/* Overlay Toggles */}
-          <button
-            type="button"
-            onClick={() => setShowCorridors((v) => !v)}
-            className={`px-2.5 py-1 text-[11px] font-mono rounded border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              showCorridors
-                ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
-                : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
-            }`}
-          >
-            Corridors
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowGrid((v) => !v)}
-            className={`px-2.5 py-1 text-[11px] font-mono rounded border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              showGrid
-                ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
-                : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
-            }`}
-          >
-            Grid
-          </button>
-
-          {onToggle3dTrajectory && (
+          {/* Segmented Group 2: 100m Heatmap | Corridors | Regional Grid | 3D Trajectory */}
+          <div className="inline-flex items-center border border-[#262626] divide-x divide-[#262626]">
             <button
               type="button"
-              data-testid="map-toggle-3d-trajectory"
-              aria-pressed={show3dTrajectory}
-              onClick={onToggle3dTrajectory}
-              className={`px-2.5 py-1 text-[11px] font-mono rounded border flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                show3dTrajectory
-                  ? 'bg-purple-950/70 text-purple-300 border-purple-500/50'
-                  : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+              data-testid="map-toggle-100m-heatmap"
+              onClick={() => setShow100mHeatmap((v) => !v)}
+              aria-pressed={show100mHeatmap}
+              className={`h-7 px-2.5 text-[11px] font-mono rounded-none flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                show100mHeatmap
+                  ? 'bg-[#161616] text-[#FAFAFA]'
+                  : 'bg-[#111111] hover:bg-[#161616] text-[#A1A1AA]'
+              }`}
+              title="Toggle 100m-spaced Green-to-Red dot-grid probability heatmap around estimated fix"
+            >
+              <span
+                className="w-1.5 h-1.5 shrink-0"
+                style={{
+                  backgroundColor: show100mHeatmap ? '#ef4444' : '#3f3f46',
+                }}
+              />
+              <Grid className="w-3 h-3" />
+              <span>100m Heatmap</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowCorridors((v) => !v)}
+              aria-pressed={showCorridors}
+              className={`h-7 px-2.5 text-[11px] font-mono rounded-none flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                showCorridors
+                  ? 'bg-[#161616] text-[#FAFAFA]'
+                  : 'bg-[#111111] hover:bg-[#161616] text-[#A1A1AA]'
               }`}
             >
-              <Box className="w-3 h-3" />
-              <span>3D Trajectory</span>
+              <span
+                className="w-1.5 h-1.5 shrink-0"
+                style={{
+                  backgroundColor: showCorridors ? '#10b981' : '#3f3f46',
+                }}
+              />
+              <span>Corridors</span>
             </button>
-          )}
+
+            <button
+              type="button"
+              onClick={() => setShowGrid((v) => !v)}
+              aria-pressed={showGrid}
+              className={`h-7 px-2.5 text-[11px] font-mono rounded-none flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                showGrid
+                  ? 'bg-[#161616] text-[#FAFAFA]'
+                  : 'bg-[#111111] hover:bg-[#161616] text-[#A1A1AA]'
+              }`}
+            >
+              <span
+                className="w-1.5 h-1.5 shrink-0"
+                style={{
+                  backgroundColor: showGrid ? '#10b981' : '#3f3f46',
+                }}
+              />
+              <span>Coarse Grid</span>
+            </button>
+
+            {onToggle3dTrajectory && (
+              <button
+                type="button"
+                data-testid="map-toggle-3d-trajectory"
+                aria-pressed={show3dTrajectory}
+                onClick={onToggle3dTrajectory}
+                className={`h-7 px-2.5 text-[11px] font-mono rounded-none flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  show3dTrajectory
+                    ? 'bg-[#161616] text-[#FAFAFA]'
+                    : 'bg-[#111111] hover:bg-[#161616] text-[#A1A1AA]'
+                }`}
+              >
+                <span
+                  className="w-1.5 h-1.5 shrink-0"
+                  style={{
+                    backgroundColor: show3dTrajectory ? '#ff4f00' : '#3f3f46',
+                  }}
+                />
+                <Box className="w-3 h-3" />
+                <span>3D Trajectory</span>
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Viewport Controls */}
-        <div className="flex items-center gap-1.5">
+        {/* Segmented Group 3: Viewport Controls */}
+        <div className="inline-flex items-center border border-[#262626] divide-x divide-[#262626] shrink-0">
+          {basins.length > 0 && status !== 'inconclusive' && (
+            <button
+              type="button"
+              data-testid="zoom-to-heatmap-btn"
+              onClick={handleZoomToHeatmapFix}
+              className="h-7 px-2.5 text-[11px] font-mono rounded-none bg-[#111111] hover:bg-[#161616] text-[#FAFAFA] flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+              title="Zoom to 100m dot-grid heatmap around estimated fix"
+            >
+              <span className="w-1.5 h-1.5 bg-[#EF4444]" />
+              Focus 100m Grid
+            </button>
+          )}
           {onChangeBounds && (
             <button
               type="button"
               onClick={handleSetBoundsFromMapView}
-              className="px-2.5 py-1 text-[11px] font-mono rounded bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-700 flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              className="h-7 px-2.5 text-[11px] font-mono rounded-none bg-[#111111] hover:bg-[#161616] text-[#FAFAFA] flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               title="Set search bounding box to current map viewport"
             >
               <Crosshair className="w-3 h-3" />
@@ -649,7 +750,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
             type="button"
             onClick={() => mapInstanceRef.current?.zoomIn()}
             aria-label="Zoom in map"
-            className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 cursor-pointer"
+            className="h-7 w-7 rounded-none bg-[#111111] hover:bg-[#161616] text-[#A1A1AA] hover:text-[#FAFAFA] flex items-center justify-center cursor-pointer transition-colors"
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
@@ -657,7 +758,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
             type="button"
             onClick={() => mapInstanceRef.current?.zoomOut()}
             aria-label="Zoom out map"
-            className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 cursor-pointer"
+            className="h-7 w-7 rounded-none bg-[#111111] hover:bg-[#161616] text-[#A1A1AA] hover:text-[#FAFAFA] flex items-center justify-center cursor-pointer transition-colors"
           >
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
@@ -665,7 +766,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
             type="button"
             onClick={handleFitSearchBounds}
             aria-label="Fit search bounds"
-            className="px-2.5 py-1 text-[11px] font-mono rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 flex items-center gap-1 cursor-pointer"
+            className="h-7 px-2.5 text-[11px] font-mono rounded-none bg-[#111111] hover:bg-[#161616] text-[#A1A1AA] hover:text-[#FAFAFA] flex items-center gap-1.5 cursor-pointer transition-colors"
           >
             <RotateCcw className="w-3 h-3" />
             Fit Bounds
@@ -686,19 +787,51 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
           className="w-full h-full z-0"
         />
 
-        {/* Bottom-Left HUD: Active Layer Indicator + Live Cursor Coordinates */}
-        <div className="absolute bottom-3 left-3 z-[400] flex items-center gap-2 pointer-events-none">
-          <div className="bg-slate-950/90 border border-slate-800 px-2.5 py-1 rounded text-[11px] font-mono text-slate-300 flex items-center gap-1.5">
-            <Layers className="w-3 h-3 text-cyan-400" />
-            <span className="text-slate-100">{MAP_STYLES[mapStyle].label}</span>
-            <span className="text-slate-500">·</span>
-            <span className="text-slate-400">
-              {MAP_STYLES[mapStyle].shortDesc}
-            </span>
-          </div>
+        {/* Bottom-Left HUD: 100m Dot-Grid Heatmap Legend + Live Cursor Coordinates */}
+        <div className="absolute bottom-3 left-3 z-[400] flex flex-col gap-1.5 pointer-events-auto">
+          {show100mHeatmap &&
+            heatmapGrid.length > 0 &&
+            status !== 'inconclusive' && (
+              <div
+                data-testid="heatmap-100m-hud"
+                className="bg-[#0A0A0A] border border-[#262626] px-3 py-2 rounded-none text-[10px] font-mono tabular-nums text-[#FAFAFA] flex flex-col gap-1.5 w-64"
+              >
+                <div className="flex items-center justify-between border-b border-[#1F1F1F] pb-1">
+                  <span className="uppercase tracking-[0.08em] text-[#A1A1AA] font-semibold">
+                    100M DOT-GRID HEATMAP ({heatmapGrid.length} PTS)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setInvertHeatmapRamp((v) => !v)}
+                    className="px-1.5 py-0.5 bg-[#111111] hover:bg-[#161616] border border-[#262626] text-[9px] text-[#FAFAFA] cursor-pointer"
+                    title="Invert Green/Red heatmap polarity"
+                  >
+                    {invertHeatmapRamp ? 'RED→GRN' : 'GRN→RED'}
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[#737373]">
+                    {invertHeatmapRamp ? 'LOW' : 'LOW'}
+                  </span>
+                  <div
+                    className="flex-1 h-2 border border-[#262626]"
+                    style={{
+                      background: invertHeatmapRamp
+                        ? 'linear-gradient(90deg, #ef4444 0%, #f97316 25%, #eab308 50%, #84cc16 75%, #10b981 100%)'
+                        : 'linear-gradient(90deg, #10b981 0%, #84cc16 25%, #eab308 50%, #f97316 75%, #ef4444 100%)',
+                    }}
+                  />
+                  <span className="text-[#FAFAFA]">PEAK FIX</span>
+                </div>
+                <div className="flex justify-between text-[9.5px] text-[#737373]">
+                  <span>PITCH: 100.0 m × 100.0 m</span>
+                  <span>SPAN: 2.4 km × 2.4 km</span>
+                </div>
+              </div>
+            )}
 
           {cursorGeo && (
-            <div className="bg-slate-950/90 border border-slate-800 px-2.5 py-1 rounded text-[11px] font-mono tabular-nums text-slate-300">
+            <div className="bg-[#0A0A0A] border border-[#262626] px-2.5 py-1 rounded-none text-[11px] font-mono tabular-nums text-[#FAFAFA] pointer-events-none self-start">
               {cursorGeo.lat.toFixed(4)}°, {cursorGeo.lon.toFixed(4)}°
             </div>
           )}
@@ -708,34 +841,40 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
         {active3dTrajectory && (
           <div
             data-testid="trajectory-3d-hud"
-            className="absolute bottom-6 right-3 z-[400] w-72 bg-slate-950/95 border border-purple-500/40 rounded-md p-3 shadow-xl pointer-events-auto"
+            className="absolute bottom-6 right-3 z-[400] w-72 bg-[#0A0A0A] border border-[#262626] rounded-none p-3 pointer-events-auto"
           >
-            <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 mb-2">
-              <div className="flex items-center gap-1.5 text-xs font-mono font-semibold text-purple-300">
-                <Box className="w-3.5 h-3.5 text-purple-400" />
+            <div className="flex items-center justify-between border-b border-[#1F1F1F] pb-1.5 mb-2">
+              <div className="flex items-center gap-1.5 text-[11px] font-mono font-semibold text-[#FAFAFA]">
+                <span className="w-1.5 h-1.5 bg-[#FF4F00] inline-block" />
                 <span>3D Trajectory · {active3dTrajectory.callsign}</span>
               </div>
-              <span className="text-[10px] font-mono text-slate-400">
+              <span className="text-[10px] font-mono text-[#737373]">
                 {active3dTrajectory.aircraft}
               </span>
             </div>
 
             <div className="grid grid-cols-3 gap-2 text-[11px] font-mono tabular-nums mb-2">
               <div>
-                <div className="text-[10px] text-slate-500">MSL Alt</div>
-                <div className="text-slate-100">
+                <div className="text-[10px] uppercase tracking-wider text-[#737373]">
+                  MSL ALT
+                </div>
+                <div className="text-[#FAFAFA]">
                   {active3dTrajectory.cpaPoint.alt_m.toFixed(0)} m
                 </div>
               </div>
               <div>
-                <div className="text-[10px] text-slate-500">3D Slant</div>
-                <div className="text-amber-300">
+                <div className="text-[10px] uppercase tracking-wider text-[#737373]">
+                  3D SLANT
+                </div>
+                <div className="text-[#F59E0B]">
                   {active3dTrajectory.minSlant3dM.toFixed(0)} m
                 </div>
               </div>
               <div>
-                <div className="text-[10px] text-slate-500">Peak Elev</div>
-                <div className="text-purple-300">
+                <div className="text-[10px] uppercase tracking-wider text-[#737373]">
+                  PEAK ELEV
+                </div>
+                <div className="text-[#FF4F00]">
                   {active3dTrajectory.maxElevationDeg.toFixed(1)}°
                 </div>
               </div>
@@ -744,7 +883,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
             {/* Mini 3D Slant & Altitude Profile SVG */}
             <svg
               viewBox="0 0 240 54"
-              className="w-full h-14 bg-[#070a12] rounded border border-slate-800/90 overflow-visible"
+              className="w-full h-14 bg-[#000000] rounded-none border border-[#1F1F1F] overflow-visible"
             >
               {(() => {
                 const pts = active3dTrajectory.points;
@@ -772,14 +911,14 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
                       y1="22"
                       x2="232"
                       y2="22"
-                      stroke="#334155"
+                      stroke="#262626"
                       strokeDasharray="2,2"
                       strokeWidth="1"
                     />
                     <polyline
                       fill="none"
-                      stroke="#c084fc"
-                      strokeWidth="2"
+                      stroke="#ff4f00"
+                      strokeWidth="1.75"
                       points={polyPoints}
                     />
                   </>

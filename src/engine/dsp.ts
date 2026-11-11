@@ -3,8 +3,9 @@
  * - In-place Radix-2 Cooley-Tukey FFT
  * - STFT Magnitude Spectrogram
  * - Per-Frequency Median / MAD Spectral Whitening (reveals <0 dB SNR inaudible flyovers)
- * - Countermeasure Processors (80 Hz High-Pass Filter, Spectral Boost, Clock Drift ppm, Codec Quantization)
- * - Physics-Bounded Viterbi Dynamic Programming Ridge Tracer & Harmonic Family Grouper
+ * - Countermeasure Processors (80 Hz High-Pass Filter, Spectral Boost, Clock Drift ppm, Notch Filter)
+ * - Ground Traffic / Passing Car Transient Suppression & Kinematic Source Classifier
+ * - Wavelength (λ = c/f), Harmonic Comb, and Interactive Point-Pick Curve Fitting
  */
 import { receiveDopplerLinear } from './acoustics';
 
@@ -30,6 +31,28 @@ export interface TracedRidge {
   harmonicOrder: number;
 }
 
+export type DopplerSourceClass =
+  | 'aircraft'
+  | 'ground_traffic'
+  | 'stationary_hum';
+
+export interface DopplerAcousticMetrics {
+  f0_hz: number;
+  wavelength0_m: number;
+  wavelengthApp_m: number;
+  wavelengthRec_m: number;
+  freqApp_hz: number;
+  freqRec_hz: number;
+  dopplerShiftSpan_hz: number;
+  machNumber: number;
+  maxInflectionSlope_hz_s: number;
+  transitionDuration_s: number;
+  rpm2Blade: number;
+  rpm3Blade: number;
+  sourceClass: DopplerSourceClass;
+  rejectionReason: string | null;
+}
+
 export interface FittedDopplerEvent {
   id: string;
   flight_id?: string;
@@ -45,6 +68,73 @@ export interface FittedDopplerEvent {
     naivePoints?: [number, number][];
   }[];
   measuredSamples?: { t: number; f: number; w: number }[];
+  rejectedAsTraffic?: boolean;
+}
+
+/**
+ * Compute full acoustic & wavelength telemetry for a Doppler curve and classify
+ * whether it originates from an airborne propeller aircraft vs. ground road traffic (car/truck)
+ * or stationary hum.
+ */
+export function computeEventAcousticMetrics(
+  ev: Pick<FittedDopplerEvent, 'f0_hz' | 'speed_ms' | 'slant_m'>,
+  soundSpeedMs: number = 340.0
+): DopplerAcousticMetrics {
+  const c = Math.max(280.0, soundSpeedMs);
+  const f0 = Math.max(5.0, ev.f0_hz);
+  const v = Math.max(0.0, Math.min(c * 0.85, ev.speed_ms));
+  const r0 = Math.max(5.0, ev.slant_m);
+
+  const wavelength0_m = c / f0;
+  const wavelengthApp_m = Math.max(0.01, (c - v) / f0);
+  const wavelengthRec_m = (c + v) / f0;
+
+  const freqApp_hz = f0 / Math.max(0.15, 1.0 - v / c);
+  const freqRec_hz = f0 / (1.0 + v / c);
+  const dopplerShiftSpan_hz = freqApp_hz - freqRec_hz;
+  const machNumber = v / c;
+
+  // Maximum rate of frequency drop at CPA: |df/dt|_max = f0 * v^2 / (c * r0)
+  const maxInflectionSlope_hz_s = (f0 * v * v) / (c * r0);
+  // Characteristic transition window across CPA: tau = 2 * r0 / v
+  const transitionDuration_s = v > 0.5 ? (2.0 * r0) / v : 999.0;
+
+  const rpm2Blade = (60.0 * f0) / 2.0;
+  const rpm3Blade = (60.0 * f0) / 3.0;
+
+  let sourceClass: DopplerSourceClass = 'aircraft';
+  let rejectionReason: string | null = null;
+
+  if (v < 5.0) {
+    sourceClass = 'stationary_hum';
+    rejectionReason = `Stationary tonal source (v=${v.toFixed(1)} m/s < 5 m/s)`;
+  } else if (r0 < 180.0 || v < 42.0 || transitionDuration_s < 6.0) {
+    sourceClass = 'ground_traffic';
+    const reasons: string[] = [];
+    if (r0 < 180.0) reasons.push(`near-field slant r₀=${r0.toFixed(0)}m < 180m`);
+    if (v < 42.0) reasons.push(`road speed v=${v.toFixed(0)}m/s < 42m/s`);
+    if (transitionDuration_s < 6.0) {
+      reasons.push(`whip transition τ=${transitionDuration_s.toFixed(1)}s < 6s`);
+    }
+    rejectionReason = `Ground traffic / car pass-by (${reasons.join(', ')})`;
+  }
+
+  return {
+    f0_hz: f0,
+    wavelength0_m,
+    wavelengthApp_m,
+    wavelengthRec_m,
+    freqApp_hz,
+    freqRec_hz,
+    dopplerShiftSpan_hz,
+    machNumber,
+    maxInflectionSlope_hz_s,
+    transitionDuration_s,
+    rpm2Blade,
+    rpm3Blade,
+    sourceClass,
+    rejectionReason,
+  };
 }
 
 /**
@@ -56,7 +146,6 @@ export function fftRadix2(re: Float64Array, im: Float64Array): void {
     throw new Error(`FFT length ${n} must be a power of 2`);
   }
 
-  // Bit-reversal permutation
   let j = 0;
   for (let i = 0; i < n; i++) {
     if (i < j) {
@@ -75,7 +164,6 @@ export function fftRadix2(re: Float64Array, im: Float64Array): void {
     j += m;
   }
 
-  // Butterfly stages
   for (let len = 2; len <= n; len <<= 1) {
     const half = len >> 1;
     const ang = (-2.0 * Math.PI) / len;
@@ -103,7 +191,6 @@ export function fftRadix2(re: Float64Array, im: Float64Array): void {
 
 /**
  * Compute STFT spectrogram and Median/MAD whitened contrast matrix from PCM samples.
- * Restricts stored frequency bins up to maxFreqHz (default 600 Hz) for memory & speed optimality.
  */
 export function computeSpectrogram(
   samples: Float32Array,
@@ -213,8 +300,98 @@ export function whitenSpectrogram(
 }
 
 /**
+ * Suppress road traffic pass-by transients and short broadband noise bursts in a spectrogram:
+ * 1. Subtracts instantaneous column median z-score (removes broadband tire/wind roar that lights up all frequencies at once).
+ * 2. Applies a narrowband harmonic persistence filter so short (<3s) high-slope car whips are attenuated while sustained aircraft ridges pass through.
+ */
+export function applyTrafficTransientSuppression(
+  spec: SpectrogramData
+): SpectrogramData {
+  const { raw, whitened, freqs, times, nFreq, nTime, sampleRate, durationS } =
+    spec;
+  const filteredWhitened = new Float32Array(whitened.length);
+  const colBuf = new Float32Array(nFreq);
+
+  for (let t = 0; t < nTime; t++) {
+    for (let f = 0; f < nFreq; f++) {
+      colBuf[f] = whitened[f * nTime + t];
+    }
+    colBuf.sort();
+    // 65th percentile of column acts as broadband transient estimator (passing car tire/engine burst)
+    const broadbandFloor = Math.max(0.0, colBuf[Math.floor(nFreq * 0.65)]);
+
+    for (let f = 0; f < nFreq; f++) {
+      const idx = f * nTime + t;
+      const tPrev = Math.max(0, t - 2);
+      const tNext = Math.min(nTime - 1, t + 2);
+      // Temporal continuity check along quasi-steady frequency neighbor bins
+      let localContinuity = 0.0;
+      for (let df = -1; df <= 1; df++) {
+        const fn = Math.min(nFreq - 1, Math.max(0, f + df));
+        localContinuity = Math.max(
+          localContinuity,
+          0.5 * (whitened[fn * nTime + tPrev] + whitened[fn * nTime + tNext])
+        );
+      }
+      const rawZ = Math.max(0.0, whitened[idx] - broadbandFloor * 0.85);
+      filteredWhitened[idx] =
+        localContinuity > 0.8 ? rawZ : rawZ * 0.35;
+    }
+  }
+
+  return {
+    raw,
+    whitened: filteredWhitened,
+    freqs,
+    times,
+    nFreq,
+    nTime,
+    sampleRate,
+    durationS,
+  };
+}
+
+/**
+ * Surgical 2nd-order Biquad Notch (Band-Stop) Filter to remove interfering tones or road rumble bands.
+ */
+export function applyNotchFilter(
+  samples: Float32Array,
+  sampleRate: number,
+  centerHz: number,
+  bandwidthHz: number = 12.0
+): Float32Array {
+  if (centerHz <= 5.0 || centerHz >= sampleRate * 0.48) return samples;
+  const out = new Float32Array(samples.length);
+  const w0 = (2.0 * Math.PI * centerHz) / sampleRate;
+  const cosw0 = Math.cos(w0);
+  const Q = Math.max(0.5, centerHz / Math.max(2.0, bandwidthHz));
+  const alpha = Math.sin(w0) / (2.0 * Q);
+
+  const b0 = 1.0;
+  const b1 = -2.0 * cosw0;
+  const b2 = 1.0;
+  const a0 = 1.0 + alpha;
+  const a1 = -2.0 * cosw0;
+  const a2 = 1.0 - alpha;
+
+  let x1 = 0.0,
+    x2 = 0.0,
+    y1 = 0.0,
+    y2 = 0.0;
+  for (let i = 0; i < samples.length; i++) {
+    const x0 = samples[i];
+    const y0 = (b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+    x2 = x1;
+    x1 = x0;
+    y2 = y1;
+    y1 = y0;
+    out[i] = y0;
+  }
+  return out;
+}
+
+/**
  * Countermeasure 1: 4th-order Butterworth High-Pass Filter at cutoffHz (default 80 Hz).
- * Demonstrates how removing the fundamental f0 leaves upper harmonics k >= 2 intact.
  */
 export function applyHighPassFilter(
   samples: Float32Array,
@@ -224,8 +401,9 @@ export function applyHighPassFilter(
   const out = new Float32Array(samples.length);
   out.set(samples);
 
-  // Two cascaded 2nd-order Butterworth high-pass biquad sections
-  const wc = Math.tan((Math.PI * Math.min(cutoffHz, sampleRate * 0.45)) / sampleRate);
+  const wc = Math.tan(
+    (Math.PI * Math.min(cutoffHz, sampleRate * 0.45)) / sampleRate
+  );
   const qValues = [0.5411961, 1.306563];
 
   for (const q of qValues) {
@@ -256,7 +434,6 @@ export function applyHighPassFilter(
 
 /**
  * Countermeasure Reversal: Spectral Sub-band Boost (+dB gain in 50-350 Hz aircraft band)
- * Reveals attenuated Doppler curves after high-pass filtering or MP3 compression.
  */
 export function applyAircraftBandBoost(
   samples: Float32Array,
@@ -265,7 +442,6 @@ export function applyAircraftBandBoost(
 ): Float32Array {
   if (Math.abs(boostDb) < 0.1) return samples;
   const out = new Float32Array(samples.length);
-  // Peaking EQ centered at 135 Hz (Q = 0.9)
   const f0 = 135.0;
   const Q = 0.9;
   const A = Math.pow(10.0, boostDb / 40.0);
@@ -351,7 +527,6 @@ export function traceDopplerRidge(
   const dt = times.length > 1 ? times[1] - times[0] : 0.1;
   const fRef = freqs[bandIndices[nB - 1]];
 
-  // Physics slope bounds: peak descent fRef * v_max^2 / (c * r_min)
   const descMaxHzS = 1.35 * ((fRef * 220.0 * 220.0) / (343.0 * 350.0));
   const ascMaxHzS = 0.25 * descMaxHzS + 2.0;
   const avgDown = descMaxHzS * dt;
@@ -374,7 +549,7 @@ export function traceDopplerRidge(
       let bestPrev = -Infinity;
       let bestRow = fc;
       for (let prev = lo; prev <= hi; prev++) {
-        const deltaHz = (prev - fc) * df; // positive if prev > fc (descending)
+        const deltaHz = (prev - fc) * df;
         const descExcess = Math.max(0.0, deltaHz - avgDown);
         const ascExcess = Math.max(0.0, -deltaHz - avgUp);
         const cost = kOver * (descExcess + ascExcess);
@@ -390,7 +565,6 @@ export function traceDopplerRidge(
     }
   }
 
-  // Free termination at highest-scoring cell
   let bestVal = -Infinity;
   let bestFc = 0;
   let bestTc = nTime - 1;
@@ -445,6 +619,107 @@ export function traceDopplerRidge(
 }
 
 /**
+ * Fit parametric Doppler parameters (f0, v, r, t_cpa) to user-picked points {(t, f)} on the spectrogram.
+ */
+export function fitDopplerEventFromPoints(
+  points: { t: number; f: number }[],
+  eventId: string = 'EV01',
+  soundSpeedMs: number = 340.0
+): FittedDopplerEvent | null {
+  if (points.length < 2) return null;
+  const sorted = [...points].sort((a, b) => a.t - b.t);
+  const timesS = sorted.map((p) => p.t);
+  const freqsHz = sorted.map((p) => p.f);
+
+  const fMax = Math.max(...freqsHz);
+  const fMin = Math.min(...freqsHz);
+  const ratio = fMax / Math.max(5.0, fMin);
+  const c = Math.max(280.0, soundSpeedMs);
+
+  let vEst = ratio > 1.015 ? (c * (ratio - 1.0)) / (ratio + 1.0) : 75.0;
+  vEst = Math.max(10.0, Math.min(200.0, vEst));
+  const f0Est =
+    Math.sqrt(fMax * fMin) * Math.sqrt(Math.max(0.2, 1.0 - (vEst / c) ** 2));
+
+  // Estimate CPA time from midpoint of steepest drop or time span center
+  let tcEst = 0.5 * (timesS[0] + timesS[timesS.length - 1]);
+  let maxSlope = 0.0;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const dt = Math.max(0.1, sorted[i + 1].t - sorted[i].t);
+    const df = sorted[i].f - sorted[i + 1].f;
+    const slope = df / dt;
+    if (slope > maxSlope) {
+      maxSlope = slope;
+      tcEst = 0.5 * (sorted[i].t + sorted[i + 1].t);
+    }
+  }
+
+  // Estimate slant range r0 from slope: r0 ~ f0 * v^2 / (c * slope)
+  const rSeed =
+    maxSlope > 0.1
+      ? Math.max(25.0, Math.min(4500.0, (f0Est * vEst * vEst) / (c * maxSlope)))
+      : 1200.0;
+
+  let bestLoss = Infinity;
+  let bestParams = { f0: f0Est, v: vEst, r: rSeed, tc: tcEst };
+
+  const rCandidates = [
+    Math.max(20.0, rSeed * 0.5),
+    Math.max(30.0, rSeed * 0.8),
+    rSeed,
+    Math.min(4500.0, rSeed * 1.3),
+    Math.min(4500.0, rSeed * 1.8),
+  ];
+
+  for (const f0Cand of [f0Est * 0.97, f0Est, f0Est * 1.03]) {
+    for (const vCand of [vEst * 0.85, vEst, vEst * 1.15]) {
+      for (const rCand of rCandidates) {
+        for (const tcCand of [tcEst - 1.5, tcEst, tcEst + 1.5]) {
+          const modeled = receiveDopplerLinear(
+            timesS,
+            f0Cand,
+            vCand,
+            rCand,
+            tcCand,
+            c
+          );
+          let loss = 0.0;
+          for (let i = 0; i < timesS.length; i++) {
+            loss += Math.abs(freqsHz[i] - modeled[i]);
+          }
+          if (loss < bestLoss) {
+            bestLoss = loss;
+            bestParams = { f0: f0Cand, v: vCand, r: rCand, tc: tcCand };
+          }
+        }
+      }
+    }
+  }
+
+  const metrics = computeEventAcousticMetrics(
+    {
+      f0_hz: bestParams.f0,
+      speed_ms: bestParams.v,
+      slant_m: bestParams.r,
+    },
+    c
+  );
+
+  return {
+    id: eventId,
+    f0_hz: Number(bestParams.f0.toFixed(1)),
+    speed_ms: Number(bestParams.v.toFixed(1)),
+    slant_m: Number(bestParams.r.toFixed(0)),
+    t_cpa_s: Number(bestParams.tc.toFixed(1)),
+    snr_db: 36.0,
+    orders: [1, 2, 3],
+    curves: [],
+    measuredSamples: sorted.map((p) => ({ t: p.t, f: p.f, w: 3.0 })),
+    rejectedAsTraffic: metrics.sourceClass !== 'aircraft',
+  };
+}
+
+/**
  * Fit parametric Doppler parameters (f0, v, r, t_cpa) to a traced ridge using plateau ratios + grid search.
  */
 export function fitDopplerEventFromRidge(
@@ -463,10 +738,9 @@ export function fitDopplerEventFromRidge(
 
   let vEst = ratio > 1.03 ? (c * (ratio - 1.0)) / (ratio + 1.0) : 95.0;
   vEst = Math.max(45.0, Math.min(180.0, vEst));
-  let f0Est =
+  const f0Est =
     Math.sqrt(fPre * fPost) * Math.sqrt(Math.max(0.2, 1.0 - (vEst / c) ** 2));
 
-  // Estimate steepest drop time as CPA seed
   let maxDropRate = -Infinity;
   let tcEst = timesS[Math.floor(timesS.length / 2)];
   for (let i = 1; i < timesS.length - 1; i++) {
@@ -478,7 +752,6 @@ export function fitDopplerEventFromRidge(
     }
   }
 
-  // Refine (f0, v, r, tc) over a compact local grid
   let bestLoss = Infinity;
   let bestParams = { f0: f0Est, v: vEst, r: 1500.0, tc: tcEst };
 
@@ -558,7 +831,7 @@ export function fitDopplerEventFromRidge(
 
 /**
  * Synthesize realistic multi-harmonic propeller flyover PCM audio buffer (at 8000 Hz)
- * for any set of Doppler events (used by the Demo Security Camera Video & Custom Synth).
+ * for any set of Doppler events.
  */
 export function synthesizeScenarioAudio(
   events: {
@@ -573,7 +846,6 @@ export function synthesizeScenarioAudio(
   const n = Math.floor(durationS * sampleRate);
   const out = new Float32Array(n);
 
-  // Deterministic pseudo-random ambient wind/tree noise
   let seed = 1337;
   const rand = () => {
     seed = (seed * 1664525 + 1013904223) >>> 0;
@@ -589,12 +861,11 @@ export function synthesizeScenarioAudio(
 
   const nEv = Math.max(1, events.length);
   events.forEach((ev, idx) => {
-    // Map each event's CPA into the 40s window so all events are clearly visible in the spectrogram
     const localCpaS =
       nEv === 1
         ? durationS * 0.5
         : durationS * (0.28 + (idx / (nEv - 1)) * 0.44);
-    const timeScale = 4.0; // 4x compressed time axis so a 160s flyover fits cleanly in 40s audio
+    const timeScale = 4.0;
 
     for (let k = 1; k <= 4; k++) {
       let phase = 0.0;
@@ -602,7 +873,6 @@ export function synthesizeScenarioAudio(
       for (let i = 0; i < n; i++) {
         const tSec = i / sampleRate;
         const dtPhys = (tSec - localCpaS) * timeScale;
-        // Retarded-time frequency
         const v = ev.speed_ms;
         const r = ev.slant_m;
         const c = 340.0;
@@ -627,7 +897,6 @@ export function synthesizeScenarioAudio(
     }
   });
 
-  // Normalize
   let peak = 1e-6;
   for (let i = 0; i < n; i++) {
     if (Math.abs(out[i]) > peak) peak = Math.abs(out[i]);

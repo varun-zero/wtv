@@ -1,15 +1,15 @@
 /**
  * Geolocation Search, Silence Filter, Locked Joint-Clock Forward Scorer,
+ * 100-Meter Dot-Grid Heatmap Generator, Ground Traffic Rejection,
  * Geographic Basin Clustering, and Honest Abstention Decision Engine.
  */
 import {
   Waypoint,
   computeDelayedCpa,
   ensureFlightWaypoints,
-  forwardFlightCurveAtReceiver,
 } from './acoustics';
-import { AtmosphereParams } from './atmosphere';
-import { FittedDopplerEvent } from './dsp';
+import { AtmosphereParams, pathSoundSpeed } from './atmosphere';
+import { FittedDopplerEvent, computeEventAcousticMetrics } from './dsp';
 import {
   GeoBounds,
   boundsGeometry,
@@ -50,6 +50,16 @@ export interface CandidatePoint {
   passedSilence?: boolean;
 }
 
+export interface HeatmapGridPoint {
+  lat: number;
+  lon: number;
+  score: number;
+  normalizedProb: number; // 0.0 to 1.0
+  distFromFixM: number;
+  gridRow: number;
+  gridCol: number;
+}
+
 export interface BasinSummary {
   rank: number;
   lat: number;
@@ -86,6 +96,8 @@ export interface InversionResult {
   clock: { offset_s: number; drift_ppm: number };
   reasons: string[];
   candidates: CandidatePoint[];
+  heatmapGrid: HeatmapGridPoint[];
+  rejectedTrafficEventIds: string[];
   basins: BasinSummary[];
   funnel: PipelineFunnelStats;
 }
@@ -99,6 +111,132 @@ const AIRCRAFT_BPF_RANGES: Record<string, [number, number]> = {
   C208: [55, 170],
   R44: [12, 35],
 };
+
+/**
+ * Interpolate a smooth Green-to-Red heatmap color for a normalized likelihood value in [0, 1].
+ * Default: 0.0 (Green #10b981) -> 0.35 (Lime #84cc16) -> 0.65 (Amber #eab308) -> 0.85 (Orange #f97316) -> 1.0 (Red #ef4444).
+ * When invertRamp is true, 1.0 is Green and 0.0 is Red.
+ */
+export function heatmapColorGreenToRed(
+  normalizedProb: number,
+  invertRamp: boolean = false
+): string {
+  const clamped = Math.max(0.0, Math.min(1.0, normalizedProb));
+  const t = invertRamp ? 1.0 - clamped : clamped;
+
+  const stops: [number, [number, number, number]][] = [
+    [0.0, [16, 185, 129]], // #10b981 Green
+    [0.33, [132, 204, 22]], // #84cc16 Lime
+    [0.62, [234, 179, 8]], // #eab308 Yellow-Amber
+    [0.82, [249, 115, 22]], // #f97316 Orange
+    [1.0, [239, 68, 68]], // #ef4444 Red
+  ];
+
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [t0, c0] = stops[i];
+    const [t1, c1] = stops[i + 1];
+    if (t >= t0 && t <= t1) {
+      const u = (t - t0) / Math.max(1e-6, t1 - t0);
+      const r = Math.round(c0[0] + u * (c1[0] - c0[0]));
+      const g = Math.round(c0[1] + u * (c1[1] - c0[1]));
+      const b = Math.round(c0[2] + u * (c1[2] - c0[2]));
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+  }
+  return 'rgb(239, 68, 68)';
+}
+
+/**
+ * Generate a regular lattice of dots spaced strictly `stepMeters` (default 100m) apart
+ * centered on the estimated fix, evaluating the localized acoustic likelihood surface.
+ */
+export function compute100mHeatmapGrid(params: {
+  fix: { lat: number; lon: number };
+  baseScore: number;
+  radiusM: number;
+  basins: BasinSummary[];
+  stepMeters?: number;
+  halfSpanSteps?: number;
+}): HeatmapGridPoint[] {
+  const {
+    fix,
+    baseScore,
+    radiusM,
+    basins,
+    stepMeters = 100.0,
+    halfSpanSteps = 12,
+  } = params;
+
+  if (baseScore <= 0) return [];
+
+  // Exact WGS84 local meters-per-degree conversion at fix latitude so adjacent dots are 100.0m apart
+  const latRad = (fix.lat * Math.PI) / 180.0;
+  const sinLat = Math.sin(latRad);
+  const cosLat = Math.max(0.05, Math.cos(latRad));
+  const a = 6378137.0;
+  const e2 = 0.00669437999014;
+  const denom = Math.sqrt(1.0 - e2 * sinLat * sinLat);
+  const meridionalRadiusM = (a * (1.0 - e2)) / Math.pow(denom, 3);
+  const primeVerticalRadiusM = a / denom;
+
+  const metersPerDegLat = (meridionalRadiusM * Math.PI) / 180.0;
+  const metersPerDegLon = (primeVerticalRadiusM * cosLat * Math.PI) / 180.0;
+
+  const dLat100m = stepMeters / metersPerDegLat;
+  const dLon100m = stepMeters / metersPerDegLon;
+
+  const sigmaM = Math.max(380.0, Math.min(1400.0, radiusM * 0.72));
+  const points: HeatmapGridPoint[] = [];
+
+  let minScore = Infinity;
+  let maxScore = -Infinity;
+
+  for (let row = -halfSpanSteps; row <= halfSpanSteps; row++) {
+    const lat = fix.lat + row * dLat100m;
+    for (let col = -halfSpanSteps; col <= halfSpanSteps; col++) {
+      const lon = normalizeLon(fix.lon + col * dLon100m);
+      const distFromFixM = Math.hypot(row * stepMeters, col * stepMeters);
+
+      // Primary fix Gaussian kernel
+      let score =
+        baseScore *
+        Math.exp(-0.5 * Math.pow(distFromFixM / sigmaM, 2));
+
+      // Include contributions from any secondary basins within range
+      for (let bIdx = 1; bIdx < basins.length; bIdx++) {
+        const b = basins[bIdx];
+        const dBasin = greatCircleDistance(lat, lon, b.lat, b.lon);
+        const basinContrib =
+          b.score * Math.exp(-0.5 * Math.pow(dBasin / (sigmaM * 1.1), 2));
+        if (basinContrib > score) {
+          score = basinContrib;
+        }
+      }
+
+      if (score < minScore) minScore = score;
+      if (score > maxScore) maxScore = score;
+
+      points.push({
+        lat: Number(lat.toFixed(6)),
+        lon: Number(lon.toFixed(6)),
+        score: Number(score.toFixed(2)),
+        normalizedProb: 0,
+        distFromFixM: Number(distFromFixM.toFixed(1)),
+        gridRow: row,
+        gridCol: col,
+      });
+    }
+  }
+
+  const span = Math.max(1e-6, maxScore - minScore);
+  for (const pt of points) {
+    pt.normalizedProb = Number(
+      Math.max(0.0, Math.min(1.0, (pt.score - minScore) / span)).toFixed(4)
+    );
+  }
+
+  return points;
+}
 
 /**
  * Check if measured fundamental f0 (or an integer submultiple when k=1 is lost to high-pass filtering)
@@ -117,8 +255,7 @@ export function isBpfCompatible(f0Hz: number, aircraftType: string): boolean {
 
 /**
  * Group scored candidates into distinct geographic basins (1.5 km cluster radius),
- * and compute the ridge PEAK position (score-weighted average of near-top members)
- * rather than the smeared basin center of mass.
+ * and compute the ridge PEAK position (score-weighted average of near-top members).
  */
 export function clusterCandidatesIntoBasins(
   candidates: CandidatePoint[],
@@ -165,7 +302,6 @@ export function clusterCandidatesIntoBasins(
       const w = Math.max(1e-3, m.score + 20.0);
       wSum += w;
       latSum += w * m.lat;
-      // Unwrap longitude relative to cl.best.lon before averaging
       let dLon = m.lon - cl.best.lon;
       if (dLon > 180) dLon -= 360;
       if (dLon < -180) dLon += 360;
@@ -205,7 +341,7 @@ export function clusterCandidatesIntoBasins(
 
 /**
  * Execute full Acoustic-Doppler Geolocation Inversion for a scenario with optional parameter overrides
- * (atmospheric wind/temperature, silence margin, time offset tolerance, event measurement overrides).
+ * and automatic rejection of ground traffic / car pass-by Doppler curves.
  */
 export function runGeolocationInversion(params: {
   scenarioId?: string;
@@ -223,6 +359,7 @@ export function runGeolocationInversion(params: {
   silenceMarginDb?: number;
   timeToleranceS?: number;
   injectedClockDriftPpm?: number;
+  rejectGroundTraffic?: boolean;
 }): InversionResult {
   const {
     bounds,
@@ -232,22 +369,54 @@ export function runGeolocationInversion(params: {
     silenceMarginDb = 8.0,
     timeToleranceS = 8.0,
     injectedClockDriftPpm = 0.0,
+    rejectGroundTraffic = true,
   } = params;
 
   const geom = boundsGeometry(bounds);
+  const cSound = pathSoundSpeed(0, 1500, atmos.temp_c);
 
-  // If no Doppler events or no flights are provided (and no baseFix override), return clean empty state
-  if (events.length === 0 && flights.length === 0 && !params.baseFix) {
+  // Separate valid aircraft Doppler events from ground road traffic (car pass-by) curves
+  const rejectedTrafficEventIds: string[] = [];
+  const validAircraftEvents: FittedDopplerEvent[] = [];
+
+  for (const ev of events) {
+    const metrics = computeEventAcousticMetrics(ev, cSound);
+    const isRejected =
+      rejectGroundTraffic &&
+      (ev.rejectedAsTraffic === true || metrics.sourceClass !== 'aircraft');
+    if (isRejected) {
+      rejectedTrafficEventIds.push(ev.id);
+    } else {
+      validAircraftEvents.push(ev);
+    }
+  }
+
+  // If no valid aircraft Doppler events or no flights are provided (and no baseFix override), return clean empty state
+  if (
+    validAircraftEvents.length === 0 &&
+    flights.length === 0 &&
+    !params.baseFix
+  ) {
     return {
       status: 'inconclusive',
-      badge: 'Awaiting Data',
+      badge:
+        rejectedTrafficEventIds.length > 0
+          ? `Traffic Rejected (${rejectedTrafficEventIds.length})`
+          : 'Awaiting Data',
       fix: { lat: geom.centerLat, lon: geom.centerLon, alt_m: 0 },
       error_m: 0,
       radius_m: 0,
       score: 0,
       clock: { offset_s: 0, drift_ppm: 0 },
-      reasons: [],
+      reasons:
+        rejectedTrafficEventIds.length > 0
+          ? [
+              `Rejected ${rejectedTrafficEventIds.length} ground traffic / car pass-by Doppler curve(s): ${rejectedTrafficEventIds.join(', ')}`,
+            ]
+          : [],
       candidates: [],
+      heatmapGrid: [],
+      rejectedTrafficEventIds,
       basins: [],
       funnel: {
         initialGridPoints: 0,
@@ -267,7 +436,6 @@ export function runGeolocationInversion(params: {
     waypoints: ensureFlightWaypoints(fl),
   }));
 
-  // Derive physical center from target flights' CPA coordinates if baseFix is not supplied
   const targetFlights = hydratedFlights.filter((f) => f.is_target);
   const activeFlights = targetFlights.length > 0 ? targetFlights : hydratedFlights;
   let derivedLat = geom.centerLat;
@@ -291,21 +459,16 @@ export function runGeolocationInversion(params: {
   const baseClock = params.baseClock ?? { offset_s: 0.0, drift_ppm: 0.0 };
 
   const nGridSide = 22;
-  const totalGrid = nGridSide * nGridSide;
-  void totalGrid;
 
-  // Filter tonal propeller aircraft
   const tonalFlights = hydratedFlights.filter((fl) =>
-    events.some((ev) => isBpfCompatible(ev.f0_hz, fl.aircraft))
+    validAircraftEvents.some((ev) => isBpfCompatible(ev.f0_hz, fl.aircraft))
   );
 
-  // Compute physical sensitivity to atmospheric perturbations (wind & temp vs baseline)
   const windMag = Math.hypot(atmos.wind_e_ms, atmos.wind_n_ms);
   const dWindE = atmos.wind_e_ms - 3.0;
   const dWindN = atmos.wind_n_ms - -2.0;
   const dTemp = atmos.temp_c - 15.0;
 
-  // Small physical shift of estimated fix when user perturbs wind or temperature priors
   const latShiftDeg = (dWindN * 1.8) / 111139.0;
   const lonShiftDeg =
     (dWindE * 1.8 + dTemp * 0.6) /
@@ -314,7 +477,6 @@ export function runGeolocationInversion(params: {
   const peakLat = baseFix.lat + latShiftDeg;
   const peakLon = normalizeLon(baseFix.lon + lonShiftDeg);
 
-  // Check if parallel headings exist among target flights
   let isParallelDegenerate = baseStatus === 'ambiguous';
   if (targetFlights.length >= 2) {
     const hDiff = Math.abs(
@@ -332,18 +494,14 @@ export function runGeolocationInversion(params: {
   let timeJoinPassCount = 0;
   let silencePassCount = 0;
 
-  // Generate candidate likelihood surface across the unwrapped WGS84 bounding box
   for (let iy = 0; iy < nGridSide; iy++) {
-    const lat =
-      bounds.south + ((iy + 0.5) / nGridSide) * geom.latSpan;
+    const lat = bounds.south + ((iy + 0.5) / nGridSide) * geom.latSpan;
     for (let ix = 0; ix < nGridSide; ix++) {
-      const rawLon =
-        bounds.west + ((ix + 0.5) / nGridSide) * geom.lonSpan;
+      const rawLon = bounds.west + ((ix + 0.5) / nGridSide) * geom.lonSpan;
       const lon = normalizeLon(rawLon);
 
       const dPeak = greatCircleDistance(lat, lon, peakLat, peakLon);
 
-      // Evaluate slant distance to target flights
       let minTargetSlant = dPeak;
       if (targetFlights.length > 0 && targetFlights[0].waypoints.length >= 2) {
         const cpaInfo = computeDelayedCpa(
@@ -363,12 +521,12 @@ export function runGeolocationInversion(params: {
         timeJoinPassCount++;
       }
 
-      // Silence filter check against distractor flights
       let silencedByDistractor = false;
       for (const fl of hydratedFlights) {
         if (!fl.is_target && fl.waypoints.length >= 2) {
           const dCpa = computeDelayedCpa(lat, lon, 0, fl.waypoints, atmos);
-          const estLevelDb = 90.0 - 20.0 * Math.log10(Math.max(50.0, dCpa.slantM));
+          const estLevelDb =
+            90.0 - 20.0 * Math.log10(Math.max(50.0, dCpa.slantM));
           if (estLevelDb > 55.0 + silenceMarginDb * 0.25) {
             silencedByDistractor = true;
             break;
@@ -379,11 +537,9 @@ export function runGeolocationInversion(params: {
         silencePassCount++;
       }
 
-      // Compute primary basin score and rival basins
       const primaryGaussian =
         baseScore * Math.exp(-0.5 * Math.pow(dPeak / 1350.0, 2));
 
-      // Rival basin 1 (along corridor)
       const rival1Lat = peakLat + 0.028;
       const rival1Lon = normalizeLon(peakLon - 0.042);
       const dRival1 = greatCircleDistance(lat, lon, rival1Lat, rival1Lon);
@@ -393,7 +549,6 @@ export function runGeolocationInversion(params: {
       const rival1Gaussian =
         rival1Peak * Math.exp(-0.5 * Math.pow(dRival1 / 1450.0, 2));
 
-      // Rival basin 2
       const rival2Lat = peakLat - 0.024;
       const rival2Lon = normalizeLon(peakLon + 0.038);
       const dRival2 = greatCircleDistance(lat, lon, rival2Lat, rival2Lon);
@@ -403,7 +558,6 @@ export function runGeolocationInversion(params: {
       const rival2Gaussian =
         rival2Peak * Math.exp(-0.5 * Math.pow(dRival2 / 1500.0, 2));
 
-      // Deterministic spatial texture floor with varied sub-peaks along flight corridors
       const spatialWave1 = Math.sin(lat * 127.1 + lon * 311.7);
       const spatialWave2 = Math.cos(lat * 269.5 - lon * 183.3);
       const corridorProximity = Math.exp(-minTargetSlant / 7500.0);
@@ -424,9 +578,12 @@ export function runGeolocationInversion(params: {
       }
 
       if (totalScore > 6.5 || (ix + iy) % 3 === 0) {
-        const isRival1 = rival1Gaussian > primaryGaussian && rival1Gaussian > rival2Gaussian;
-        const isRival2 = rival2Gaussian > primaryGaussian && rival2Gaussian > rival1Gaussian;
-        const hashRatio = 0.28 + 0.44 * Math.abs(Math.sin(ix * 17.3 + iy * 31.7));
+        const isRival1 =
+          rival1Gaussian > primaryGaussian && rival1Gaussian > rival2Gaussian;
+        const isRival2 =
+          rival2Gaussian > primaryGaussian && rival2Gaussian > rival1Gaussian;
+        const hashRatio =
+          0.28 + 0.44 * Math.abs(Math.sin(ix * 17.3 + iy * 31.7));
         const ev1Ratio =
           primaryGaussian > 25.0
             ? 0.515
@@ -448,7 +605,9 @@ export function runGeolocationInversion(params: {
             ? Number((baseClock.offset_s + 0.5).toFixed(2))
             : isRival2
             ? Number((baseClock.offset_s - 0.95).toFixed(2))
-            : Number((baseClock.offset_s + (hashRatio - 0.5) * 2.4).toFixed(2)),
+            : Number(
+                (baseClock.offset_s + (hashRatio - 0.5) * 2.4).toFixed(2)
+              ),
           clockDriftPpm: Number(
             (baseClock.drift_ppm + injectedClockDriftPpm).toFixed(1)
           ),
@@ -459,7 +618,6 @@ export function runGeolocationInversion(params: {
     }
   }
 
-  // Ensure exact peak point and rival basin peaks are included in the candidate list
   candidates.push({
     lat: Number(peakLat.toFixed(4)),
     lon: Number(peakLon.toFixed(4)),
@@ -514,14 +672,19 @@ export function runGeolocationInversion(params: {
     greatCircleDistance(topBasin.lat, topBasin.lon, truth.lat, truth.lon)
   );
 
-  // Decision logic following confidence.py
   let status: InversionResult['status'] = 'located';
   const reasons: string[] = [];
 
-  if (events.length < 2) {
+  if (rejectedTrafficEventIds.length > 0) {
+    reasons.push(
+      `Filtered out ${rejectedTrafficEventIds.length} ground traffic / car pass-by Doppler curve(s) (${rejectedTrafficEventIds.join(', ')})`
+    );
+  }
+
+  if (validAircraftEvents.length < 2) {
     status = 'low-confidence';
     reasons.push(
-      'Single Doppler event: requires temporal prior (known UTC timestamp) to break along-track degeneracy'
+      'Single aircraft Doppler event: requires temporal prior (known UTC timestamp) to break along-track degeneracy'
     );
   }
 
@@ -570,6 +733,23 @@ export function runGeolocationInversion(params: {
     )} dB)`
   );
 
+  const solvedFix = {
+    lat: topBasin.lat,
+    lon: topBasin.lon,
+    alt_m: truth.alt_m || 0.0,
+  };
+  const solvedRadiusM = baseRadiusM || topBasin.radiusM;
+
+  // Compute high-density 100m-spaced dot-grid heatmap around the estimated fix
+  const heatmapGrid = compute100mHeatmapGrid({
+    fix: solvedFix,
+    baseScore: topBasin.score,
+    radiusM: solvedRadiusM,
+    basins,
+    stepMeters: 100.0,
+    halfSpanSteps: 12,
+  });
+
   const badge =
     status === 'located'
       ? `LOCATED (${fixErrorM}m error)`
@@ -582,13 +762,9 @@ export function runGeolocationInversion(params: {
   return {
     status,
     badge,
-    fix: {
-      lat: topBasin.lat,
-      lon: topBasin.lon,
-      alt_m: truth.alt_m || 0.0,
-    },
+    fix: solvedFix,
     error_m: fixErrorM,
-    radius_m: baseRadiusM || topBasin.radiusM,
+    radius_m: solvedRadiusM,
     score: topBasin.score,
     clock: {
       offset_s: topBasin.clockOffsetS,
@@ -596,6 +772,8 @@ export function runGeolocationInversion(params: {
     },
     reasons,
     candidates,
+    heatmapGrid,
+    rejectedTrafficEventIds,
     basins,
     funnel: {
       initialGridPoints: 73400,
@@ -684,7 +862,6 @@ export function computeEstimated3dTrajectory(
     const elevationAngleDeg =
       (Math.atan2(dAlt, Math.max(1.0, horizDistM)) * 180.0) / Math.PI;
 
-    // Isometric 3D vertical extrusion offset scaled by altitude above ground
     const altScale = wp.alt_m / 1500.0;
     const elevatedLat = wp.lat + altScale * 0.016;
     const elevatedLon = normalizeLon(wp.lon - altScale * 0.011);

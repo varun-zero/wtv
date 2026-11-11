@@ -3,14 +3,32 @@
 
 @layer base {
   :root {
-    --font-sans: 'IBM Plex Sans', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --bg-void: #000000;          /* Spectrogram & Map canvas */
+    --bg-panel: #0a0a0a;         /* Main sidebar & header */
+    --bg-control: #111111;       /* Inputs, inactive toggles */
+    --bg-control-hover: #161616;
+
+    --border-subtle: #1f1f1f;    /* Panel hairlines */
+    --border-strong: #2e2e33;    /* Input & button borders */
+
+    --text-primary: #fafafa;     /* Primary values & active tabs */
+    --text-secondary: #a1a1aa;   /* Control labels */
+    --text-muted: #737373;       /* Section headers, units, axis ticks */
+
+    --accent-primary: #ffffff;   /* Primary CTA & active slider thumb */
+    --signal-nom: #10b981;       /* Telemetry lock / Whitened */
+    --signal-warn: #f59e0b;      /* Inconclusive / Harmonics */
+    --signal-track: #ff4f00;     /* High-contrast flight vector / Doppler curve */
+
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
   body {
-    background-color: #07090e;
-    color: #f1f5f9;
+    background-color: var(--bg-void);
+    color: var(--text-primary);
     font-family: var(--font-sans);
+    font-size: 12px;
     -webkit-font-smoothing: antialiased;
     overflow: hidden;
     height: 100vh;
@@ -24,8 +42,38 @@
   font-feature-settings: "tnum" 1;
 }
 
+/* Precision Rectangular Slider Thumb */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2px;
+  background: #262626;
+  border-radius: 0;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 6px;
+  height: 14px;
+  background: var(--accent-primary);
+  border: 1px solid #000000;
+  border-radius: 0;
+  cursor: ew-resize;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 6px;
+  height: 14px;
+  background: var(--accent-primary);
+  border: 1px solid #000000;
+  border-radius: 0;
+  cursor: ew-resize;
+}
+
 .leaflet-container {
-  background: #05080f !important;
+  background: #000000 !important;
   font-family: var(--font-mono) !important;
 }
 
@@ -35,31 +83,33 @@
   max-height: none !important;
 }
 
+/* Strict Achromatic Carbon Filter for OSM Dark Mode */
 .osm-dark-tiles .leaflet-tile-pane {
-  filter: invert(100%) hue-rotate(180deg) brightness(92%) contrast(90%);
+  filter: grayscale(100%) invert(100%) contrast(140%) brightness(65%);
 }
 
 .leaflet-control-attribution {
-  background: rgba(7, 9, 14, 0.85) !important;
-  color: #64748b !important;
-  font-size: 10px !important;
-  border-top: 1px solid rgba(51, 65, 85, 0.4);
-  border-left: 1px solid rgba(51, 65, 85, 0.4);
+  background: rgba(10, 10, 10, 0.9) !important;
+  color: #52525b !important;
+  font-size: 9px !important;
+  border-top: 1px solid #1f1f1f;
+  border-left: 1px solid #1f1f1f;
+  border-radius: 0 !important;
 }
 
 .leaflet-control-attribution a {
-  color: #38bdf8 !important;
+  color: #a1a1aa !important;
 }
 
 .leaflet-tooltip.skyprint-tooltip {
-  background: rgba(7, 10, 18, 0.92);
-  border: 1px solid rgba(56, 189, 248, 0.4);
-  color: #e2e8f0;
+  background: rgba(10, 10, 10, 0.95);
+  border: 1px solid #2e2e33;
+  color: #fafafa;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 10px;
   padding: 2px 6px;
-  border-radius: 3px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .leaflet-tooltip.skyprint-tooltip::before {
@@ -67,16 +117,16 @@
 }
 
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 4px;
+  height: 4px;
 }
 ::-webkit-scrollbar-track {
-  background: #07090e;
+  background: #050505;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
-  border-radius: 2px;
+  background: #262626;
+  border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: #3f3f46;
 }

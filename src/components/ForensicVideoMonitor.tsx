@@ -81,12 +81,12 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
 
     ctx.save();
     ctx.scale(dpr, dpr);
-    ctx.fillStyle = '#060911';
+    ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, w, h);
 
     // Center line
     const midY = h * 0.5;
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.15)';
+    ctx.strokeStyle = '#1f1f22';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, midY);
@@ -95,7 +95,7 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
 
     // Waveform envelope
     const step = Math.max(1, Math.floor(rawPcmBuffer.length / w));
-    ctx.strokeStyle = '#38bdf8';
+    ctx.strokeStyle = '#10b981';
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     for (let x = 0; x < w; x++) {
@@ -114,7 +114,7 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
     // Playhead line
     if (duration > 0) {
       const px = (currentTime / duration) * w;
-      ctx.strokeStyle = '#f8fafc';
+      ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(px, 0);
@@ -150,15 +150,17 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
   const hasMedia = Boolean(uploadedFileName || rawPcmBuffer);
 
   return (
-    <div className="flex flex-col border-b border-slate-800/80 pb-3.5">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold text-slate-200">Media</span>
-        <div className="flex items-center gap-1.5">
+    <div className="flex flex-col border-b border-[#1F1F1F] px-4 py-3.5">
+      <div className="flex items-center justify-between mb-2.5">
+        <span className="text-[10px] uppercase tracking-[0.1em] text-[#737373] font-semibold">
+          MEDIA
+        </span>
+        <div className="inline-flex items-center border border-[#262626] divide-x divide-[#262626]">
           {hasMedia && (
             <button
               type="button"
               onClick={onClearMedia}
-              className="px-2 py-1 text-[11px] font-mono text-slate-400 hover:text-rose-400 bg-slate-900 rounded border border-slate-800 flex items-center gap-1 cursor-pointer"
+              className="h-6 px-2 text-[11px] font-mono text-[#A1A1AA] hover:text-[#F43F5E] bg-[#111111] hover:bg-[#161616] rounded-none flex items-center gap-1 cursor-pointer transition-colors"
               title="Clear loaded file"
             >
               <Trash2 className="w-3 h-3" />
@@ -168,9 +170,9 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="px-2.5 py-1 text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 rounded border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+            className="h-6 px-2.5 text-[11px] font-medium bg-[#111111] hover:bg-[#161616] text-[#FAFAFA] rounded-none flex items-center gap-1.5 transition-colors cursor-pointer"
           >
-            <Upload className="w-3 h-3 text-cyan-400" />
+            <Upload className="w-3 h-3 text-[#FAFAFA]" />
             Upload File
           </button>
           <input
@@ -188,7 +190,7 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
       <div
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
-        className="relative w-full h-40 bg-[#05070b] border border-slate-800 rounded overflow-hidden flex items-center justify-center"
+        className="relative w-full h-36 bg-[#000000] border border-[#262626] rounded-none overflow-hidden flex items-center justify-center"
       >
         {uploadedVideoUrl ? (
           <video
@@ -208,14 +210,14 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="w-full h-full flex flex-col items-center justify-center gap-2 text-slate-400 hover:text-slate-200 hover:bg-slate-900/40 transition-colors cursor-pointer"
+            className="w-full h-full flex flex-col items-center justify-center gap-1.5 text-[#A1A1AA] hover:text-[#FAFAFA] hover:bg-[#0A0A0A] transition-colors cursor-pointer rounded-none"
           >
-            <Upload className="w-5 h-5 text-cyan-400" />
-            <span className="text-xs font-medium">
+            <Upload className="w-4 h-4 text-[#A1A1AA]" />
+            <span className="text-[11px] font-medium text-[#FAFAFA]">
               Drop video or audio file here
             </span>
-            <span className="text-[11px] font-mono text-slate-500">
-              MP4, MOV, WEBM, WAV, MP3
+            <span className="text-[10px] font-mono text-[#737373] tracking-wider">
+              MP4 · MOV · WEBM · WAV · MP3
             </span>
           </button>
         )}
@@ -223,29 +225,31 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
 
       {/* Transport & Timeline Scrubber Bar */}
       <div className="mt-2.5 flex items-center gap-1.5">
-        <button
-          type="button"
-          onClick={onTogglePlay}
-          disabled={!hasMedia}
-          aria-label={isPlaying ? 'Pause playback' : 'Start playback'}
-          className="w-6 h-6 rounded bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 text-slate-950 flex items-center justify-center transition-colors shrink-0 cursor-pointer"
-        >
-          {isPlaying ? (
-            <Pause className="w-3 h-3 fill-current" />
-          ) : (
-            <Play className="w-3 h-3 fill-current ml-0.5" />
-          )}
-        </button>
+        <div className="inline-flex items-center border border-[#262626] divide-x divide-[#262626] shrink-0">
+          <button
+            type="button"
+            onClick={onTogglePlay}
+            disabled={!hasMedia}
+            aria-label={isPlaying ? 'Pause playback' : 'Start playback'}
+            className="w-6 h-6 rounded-none bg-[#FFFFFF] hover:bg-[#E5E5E5] disabled:bg-[#111111] disabled:text-[#52525B] text-[#000000] flex items-center justify-center transition-colors shrink-0 cursor-pointer"
+          >
+            {isPlaying ? (
+              <Pause className="w-3 h-3 fill-current" />
+            ) : (
+              <Play className="w-3 h-3 fill-current ml-0.5" />
+            )}
+          </button>
 
-        <button
-          type="button"
-          onClick={() => onSeek(0)}
-          disabled={!hasMedia}
-          aria-label="Reset playback to start"
-          className="w-6 h-6 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-slate-400 hover:text-slate-200 border border-slate-800 flex items-center justify-center transition-colors shrink-0 cursor-pointer"
-        >
-          <RotateCcw className="w-3 h-3" />
-        </button>
+          <button
+            type="button"
+            onClick={() => onSeek(0)}
+            disabled={!hasMedia}
+            aria-label="Reset playback to start"
+            className="w-6 h-6 rounded-none bg-[#111111] hover:bg-[#161616] disabled:opacity-40 text-[#A1A1AA] hover:text-[#FAFAFA] flex items-center justify-center transition-colors shrink-0 cursor-pointer"
+          >
+            <RotateCcw className="w-3 h-3" />
+          </button>
+        </div>
 
         <input
           type="range"
@@ -256,7 +260,7 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
           value={Math.min(currentTime, Math.max(1, duration))}
           onChange={(e) => onSeek(parseFloat(e.target.value))}
           aria-label="Media playback timeline scrubber"
-          className="flex-1 min-w-0 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400 disabled:opacity-40"
+          className="flex-1 min-w-0 cursor-ew-resize disabled:opacity-40"
         />
 
         <button
@@ -264,27 +268,27 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
           onClick={onToggleMute}
           disabled={!hasMedia}
           aria-label={isMuted ? 'Unmute audio' : 'Mute audio'}
-          className="w-6 h-6 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-slate-400 hover:text-slate-200 border border-slate-800 flex items-center justify-center transition-colors shrink-0 cursor-pointer"
+          className="w-6 h-6 rounded-none bg-[#111111] hover:bg-[#161616] disabled:opacity-40 text-[#A1A1AA] hover:text-[#FAFAFA] border border-[#262626] flex items-center justify-center transition-colors shrink-0 cursor-pointer"
         >
           {isMuted ? (
-            <VolumeX className="w-3 h-3 text-rose-400" />
+            <VolumeX className="w-3 h-3 text-[#F43F5E]" />
           ) : (
-            <Volume2 className="w-3 h-3 text-cyan-400" />
+            <Volume2 className="w-3 h-3 text-[#FAFAFA]" />
           )}
         </button>
 
-        <span className="font-mono tabular-nums text-[10.5px] text-slate-400 whitespace-nowrap shrink-0">
+        <span className="font-mono tabular-nums text-[10.5px] text-[#A1A1AA] whitespace-nowrap shrink-0">
           {formatTime(currentTime)} / {formatTime(hasMedia ? duration : 0)}
         </span>
       </div>
 
       {uploadedFileName && (
-        <div className="mt-1.5 flex items-center justify-between text-[11px] text-slate-400 font-mono tabular-nums">
-          <span className="truncate max-w-[180px]">
-            <Film className="w-3 h-3 inline mr-1 text-slate-500" />
+        <div className="mt-2 pt-1.5 border-t border-[#1F1F1F] flex items-center justify-between text-[11px] text-[#A1A1AA] font-mono tabular-nums">
+          <span className="truncate max-w-[180px] text-[#FAFAFA]">
+            <Film className="w-3 h-3 inline mr-1.5 text-[#737373]" />
             {uploadedFileName}
           </span>
-          <span>{sampleRate} Hz</span>
+          <span className="text-[#737373]">{sampleRate} Hz</span>
         </div>
       )}
     </div>

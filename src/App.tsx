@@ -6,6 +6,9 @@ import {
   applyAircraftBandBoost,
   applyClockDrift,
   applyHighPassFilter,
+  applyNotchFilter,
+  applyTrafficTransientSuppression,
+  computeEventAcousticMetrics,
   computeSpectrogram,
   fitDopplerEventFromRidge,
   traceDopplerRidge,
@@ -39,6 +42,56 @@ import {
 
 type WorkspaceTab = 'spectrogram' | 'geolocation' | 'flights';
 
+interface PrecisionFaderProps {
+  label: string;
+  ariaLabel: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  displayValue: string;
+  onChange: (nextVal: number) => void;
+}
+
+const PrecisionFaderControl: React.FC<PrecisionFaderProps> = ({
+  label,
+  ariaLabel,
+  value,
+  min,
+  max,
+  step,
+  displayValue,
+  onChange,
+}) => {
+  const ratio = Math.max(0, Math.min(1, (value - min) / Math.max(1e-6, max - min)));
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="relative h-7 bg-[#111111] border border-[#222222] px-2.5 flex items-center justify-between overflow-hidden">
+        <div
+          className="absolute inset-y-0 left-0 bg-[#1F1F22] pointer-events-none"
+          style={{ width: `${(ratio * 100).toFixed(1)}%` }}
+        />
+        <span className="relative z-10 text-[10px] uppercase tracking-[0.08em] text-[#A1A1AA] font-mono">
+          {label}
+        </span>
+        <span className="relative z-10 text-[11px] font-mono tabular-nums text-[#FAFAFA]">
+          {displayValue}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        aria-label={ariaLabel}
+        className="w-full block cursor-ew-resize"
+      />
+    </div>
+  );
+};
+
 export function App() {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('spectrogram');
 
@@ -60,7 +113,11 @@ export function App() {
   const [windEMs, setWindEMs] = useState<number>(0.0);
   const [windNMs, setWindNMs] = useState<number>(0.0);
 
-  // Audio DSP Controls
+  // Audio DSP & Spectrogram Editing Controls
+  const [fftSize, setFftSize] = useState<number>(1024);
+  const [contrastGateZ, setContrastGateZ] = useState<number>(0.0);
+  const [notchFreqHz, setNotchFreqHz] = useState<number>(0.0);
+  const [rejectGroundTraffic, setRejectGroundTraffic] = useState<boolean>(true);
   const [showNaiveComparison, setShowNaiveComparison] =
     useState<boolean>(false);
   const [showWhitened, setShowWhitened] = useState<boolean>(true);
@@ -83,7 +140,6 @@ export function App() {
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const flightImportRef = useRef<HTMLInputElement | null>(null);
 
-  // Setup HTMLAudioElement
   useEffect(() => {
     if (!audioElRef.current) {
       audioElRef.current = new Audio();
@@ -109,12 +165,15 @@ export function App() {
     };
   }, []);
 
-  // Compute STFT Spectrogram from uploaded media
+  // Compute STFT Spectrogram from uploaded media with full DSP chain (HPF, Notch, Band Boost, Clock Drift, Traffic Transient Suppression)
   const spectrogram: SpectrogramData | null = useMemo(() => {
     if (!rawPcmBuffer) return null;
     let processed: Float32Array = rawPcmBuffer;
     if (highPass80Hz) {
       processed = applyHighPassFilter(processed, sampleRate, 80.0);
+    }
+    if (notchFreqHz > 10.0) {
+      processed = applyNotchFilter(processed, sampleRate, notchFreqHz, 12.0);
     }
     if (bandBoostDb > 0.5) {
       processed = applyAircraftBandBoost(processed, sampleRate, bandBoostDb);
@@ -122,8 +181,26 @@ export function App() {
     if (Math.abs(injectedDriftPpm) > 0.1) {
       processed = applyClockDrift(processed, injectedDriftPpm);
     }
-    return computeSpectrogram(processed, sampleRate, 512, 128, 500.0);
-  }, [rawPcmBuffer, sampleRate, highPass80Hz, bandBoostDb, injectedDriftPpm]);
+    const baseSpec = computeSpectrogram(
+      processed,
+      sampleRate,
+      fftSize,
+      fftSize >> 2,
+      500.0
+    );
+    return rejectGroundTraffic
+      ? applyTrafficTransientSuppression(baseSpec)
+      : baseSpec;
+  }, [
+    rawPcmBuffer,
+    sampleRate,
+    fftSize,
+    highPass80Hz,
+    notchFreqHz,
+    bandBoostDb,
+    injectedDriftPpm,
+    rejectGroundTraffic,
+  ]);
 
   // Trace Viterbi ridges when spectrogram updates
   useEffect(() => {
@@ -139,7 +216,7 @@ export function App() {
     setTracedRidges(ridges);
   }, [spectrogram]);
 
-  // Run Geolocation Solver on user's events and flights
+  // Run Geolocation Solver on user's events and flights (automatically rejecting ground traffic / car curves when enabled)
   const inversionResult: InversionResult = useMemo(() => {
     return runGeolocationInversion({
       bounds,
@@ -151,8 +228,18 @@ export function App() {
       flights,
       events,
       injectedClockDriftPpm: injectedDriftPpm,
+      rejectGroundTraffic,
     });
-  }, [bounds, tempC, windEMs, windNMs, flights, events, injectedDriftPpm]);
+  }, [
+    bounds,
+    tempC,
+    windEMs,
+    windNMs,
+    flights,
+    events,
+    injectedDriftPpm,
+    rejectGroundTraffic,
+  ]);
 
   const handleTogglePlay = useCallback(() => {
     const audio = audioElRef.current;
@@ -263,6 +350,24 @@ export function App() {
       curves: [],
     };
     setEvents((prev) => [...prev, newEv]);
+    setActiveEventIndex(events.length);
+  };
+
+  const handleAddCarPassByEvent = () => {
+    const nextIdx = events.length + 1;
+    const defaultCpa = duration > 0 ? Number((duration * 0.35).toFixed(1)) : 14.0;
+    const carEv: FittedDopplerEvent = {
+      id: `CAR0${nextIdx}`,
+      f0_hz: 68.0,
+      speed_ms: 26.0, // ~93 km/h road traffic speed
+      slant_m: 35.0, // 35m distance from road
+      t_cpa_s: defaultCpa,
+      snr_db: 38.0,
+      orders: [1, 2],
+      curves: [],
+      rejectedAsTraffic: true,
+    };
+    setEvents((prev) => [...prev, carEv]);
     setActiveEventIndex(events.length);
   };
 
@@ -411,10 +516,10 @@ export function App() {
         (s) =>
           s[5] !== null &&
           s[6] !== null &&
-          !s[8] && // on_ground === false
+          !s[8] &&
           typeof s[9] === 'number' &&
           s[9] > 25 &&
-          s[9] < 165 // prop speed range (25..165 m/s)
+          s[9] < 165
       );
 
       if (airborne.length === 0) {
@@ -467,7 +572,6 @@ export function App() {
     try {
       const text = await file.text();
       if (file.name.toLowerCase().endsWith('.csv')) {
-        // Parse CSV (e.g. callsign,aircraft,heading,speed_ms,alt_m,lat,lon,time_s)
         const lines = text
           .split(/\r?\n/)
           .map((l) => l.trim())
@@ -571,24 +675,30 @@ export function App() {
     events[Math.min(activeEventIndex, Math.max(0, events.length - 1))];
   const effectiveSoundSpeed = pathSoundSpeed(0, 1800, tempC);
 
+  const activeEvMetrics = useMemo(() => {
+    if (!activeEv) return null;
+    return computeEventAcousticMetrics(activeEv, effectiveSoundSpeed);
+  }, [activeEv, effectiveSoundSpeed]);
+
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#07090e] text-slate-100 select-none overflow-hidden">
-      {/* Clean Single Top Bar */}
-      <header className="h-12 px-5 bg-[#0b101b] border-b border-slate-800/90 flex items-center justify-between gap-8 shrink-0">
+    <div className="flex flex-col h-screen w-screen bg-[#000000] text-[#FAFAFA] select-none overflow-hidden">
+      {/* Top Instrument Header Bar */}
+      <header className="h-11 px-4 bg-[#0A0A0A] border-b border-[#1F1F1F] flex items-center justify-between gap-8 shrink-0">
         <a
           href="#spectrogram"
           onClick={(e) => {
             e.preventDefault();
             setActiveTab('spectrogram');
           }}
-          className="text-base font-bold tracking-tight text-slate-100 whitespace-nowrap shrink-0"
+          className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-[#FAFAFA] flex items-center gap-2 whitespace-nowrap shrink-0"
         >
-          SkyPrint
+          <span className="w-2 h-2 bg-[#10B981] inline-block" />
+          <span>SKYPRINT</span>
         </a>
 
         <nav
           aria-label="Workspace Tabs"
-          className="flex items-center gap-6 text-xs font-medium text-slate-400"
+          className="flex items-center h-full gap-6 text-xs font-medium text-[#A1A1AA]"
         >
           <a
             href="#spectrogram"
@@ -596,10 +706,10 @@ export function App() {
               e.preventDefault();
               setActiveTab('spectrogram');
             }}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 ${
+            className={`h-full flex items-center transition-colors whitespace-nowrap shrink-0 border-b-2 ${
               activeTab === 'spectrogram'
-                ? 'text-cyan-400 border-b-2 border-cyan-400'
-                : 'hover:text-slate-100'
+                ? 'text-[#FAFAFA] border-[#FFFFFF]'
+                : 'border-transparent hover:text-[#FAFAFA]'
             }`}
           >
             Spectrogram
@@ -610,10 +720,10 @@ export function App() {
               e.preventDefault();
               setActiveTab('geolocation');
             }}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 ${
+            className={`h-full flex items-center transition-colors whitespace-nowrap shrink-0 border-b-2 ${
               activeTab === 'geolocation'
-                ? 'text-cyan-400 border-b-2 border-cyan-400'
-                : 'hover:text-slate-100'
+                ? 'text-[#FAFAFA] border-[#FFFFFF]'
+                : 'border-transparent hover:text-[#FAFAFA]'
             }`}
           >
             Geolocation
@@ -624,10 +734,10 @@ export function App() {
               e.preventDefault();
               setActiveTab('flights');
             }}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 ${
+            className={`h-full flex items-center transition-colors whitespace-nowrap shrink-0 border-b-2 font-mono tabular-nums ${
               activeTab === 'flights'
-                ? 'text-cyan-400 border-b-2 border-cyan-400'
-                : 'hover:text-slate-100'
+                ? 'text-[#FAFAFA] border-[#FFFFFF]'
+                : 'border-transparent hover:text-[#FAFAFA]'
             }`}
           >
             Flight Tracks ({flights.length})
@@ -639,9 +749,9 @@ export function App() {
             type="button"
             onClick={handleExportGeoJson}
             disabled={inversionResult.basins.length === 0}
-            className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 rounded border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+            className="h-7 px-2.5 text-[11px] font-mono bg-[#111111] hover:bg-[#161616] disabled:opacity-40 text-[#FAFAFA] rounded-none border border-[#262626] flex items-center gap-1.5 transition-colors cursor-pointer"
           >
-            <Download className="w-3.5 h-3.5" />
+            <Download className="w-3 h-3" />
             Export GeoJSON
           </button>
         </div>
@@ -650,7 +760,8 @@ export function App() {
       {/* TAB 1: SPECTROGRAM & MEDIA */}
       {activeTab === 'spectrogram' && (
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[320px_1fr] min-h-0 overflow-hidden">
-          <aside className="bg-[#0b101b] border-r border-slate-800/80 flex flex-col min-h-0 overflow-y-auto p-4 gap-4">
+          {/* Unboxed Full-Width Hairline Sidebar */}
+          <aside className="bg-[#0A0A0A] border-r border-[#1F1F1F] flex flex-col min-h-0 overflow-y-auto p-0">
             <ForensicVideoMonitor
               isPlaying={isPlaying}
               currentTime={currentTime}
@@ -667,18 +778,18 @@ export function App() {
               onToggleMute={handleToggleMute}
             />
 
-            {/* Doppler Events Section */}
-            <div className="border-b border-slate-800/80 pb-4 flex flex-col gap-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-200">
-                  Doppler Curves
+            {/* DOPPLER CURVES & WAVELENGTH TELEMETRY SECTION */}
+            <div className="border-b border-[#1F1F1F] px-4 py-3.5 flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                <span className="text-[10px] uppercase tracking-[0.08em] text-[#737373] font-semibold whitespace-nowrap">
+                  DOPPLER CURVES
                 </span>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1 shrink-0">
                   {tracedRidges.length > 0 && (
                     <button
                       type="button"
                       onClick={handleAutoFitFromSpectrogram}
-                      className="px-2 py-1 text-[11px] font-mono bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-700 rounded flex items-center gap-1 cursor-pointer"
+                      className="h-6 px-1.5 text-[10px] font-mono bg-[#111111] hover:bg-[#161616] text-[#FAFAFA] border border-[#262626] rounded-none flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
                     >
                       <Sparkles className="w-3 h-3" />
                       Auto-Fit
@@ -686,8 +797,17 @@ export function App() {
                   )}
                   <button
                     type="button"
+                    data-testid="add-car-curve-btn"
+                    onClick={handleAddCarPassByEvent}
+                    className="h-6 px-1.5 text-[10px] font-mono bg-[#111111] hover:bg-[#161616] text-[#A1A1AA] hover:text-[#FAFAFA] border border-[#262626] rounded-none flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                    title="Simulate a passing road car Doppler whip (v=26 m/s, r0=35 m) to verify Traffic Rejection"
+                  >
+                    + Car Noise
+                  </button>
+                  <button
+                    type="button"
                     onClick={handleAddEvent}
-                    className="px-2 py-1 text-[11px] font-medium bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded flex items-center gap-1 cursor-pointer"
+                    className="h-6 px-2 text-[10.5px] font-medium bg-[#FFFFFF] hover:bg-[#E5E5E5] text-[#000000] rounded-none flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
                   >
                     <Plus className="w-3 h-3" />
                     Add Curve
@@ -696,129 +816,157 @@ export function App() {
               </div>
 
               {events.length === 0 ? (
-                <div className="text-xs text-slate-500 py-2">
-                  No Doppler curves added yet.
+                <div className="text-[11px] font-mono text-[#737373] py-1">
+                  NO ACTIVE DOPPLER CURVES
                 </div>
               ) : (
                 <>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {events.map((ev, idx) => (
-                      <div key={ev.id} className="flex items-center">
-                        <button
-                          type="button"
-                          onClick={() => setActiveEventIndex(idx)}
-                          className={`px-2 py-1 text-[11px] font-mono rounded-l border cursor-pointer ${
-                            activeEventIndex === idx
-                              ? 'bg-cyan-950/70 text-cyan-300 border-cyan-500/50'
-                              : 'bg-slate-900 text-slate-400 border-slate-800'
-                          }`}
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {events.map((ev, idx) => {
+                      const m = computeEventAcousticMetrics(
+                        ev,
+                        effectiveSoundSpeed
+                      );
+                      const isCar =
+                        ev.rejectedAsTraffic === true ||
+                        m.sourceClass !== 'aircraft';
+                      return (
+                        <div
+                          key={ev.id}
+                          className="inline-flex items-center border border-[#262626] divide-x divide-[#262626]"
                         >
-                          {ev.id}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveEvent(idx)}
-                          aria-label={`Remove ${ev.id}`}
-                          className="px-1.5 py-1 text-[11px] bg-slate-900 hover:text-rose-400 text-slate-500 border-y border-r border-slate-800 rounded-r cursor-pointer"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
+                          <button
+                            type="button"
+                            onClick={() => setActiveEventIndex(idx)}
+                            className={`h-6 px-2 text-[11px] font-mono rounded-none flex items-center gap-1.5 cursor-pointer ${
+                              activeEventIndex === idx
+                                ? 'bg-[#18181B] text-[#FAFAFA]'
+                                : 'bg-[#111111] text-[#A1A1AA]'
+                            }`}
+                          >
+                            <span
+                              className="w-1.5 h-1.5"
+                              style={{
+                                backgroundColor: isCar
+                                  ? '#f43f5e'
+                                  : activeEventIndex === idx
+                                  ? '#10b981'
+                                  : '#3f3f46',
+                              }}
+                            />
+                            <span>{ev.id}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveEvent(idx)}
+                            aria-label={`Remove ${ev.id}`}
+                            className="h-6 px-1.5 text-[11px] font-mono bg-[#111111] hover:bg-[#161616] hover:text-[#F43F5E] text-[#737373] rounded-none cursor-pointer"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
 
-                  {activeEv && (
-                    <div className="bg-[#0e1422] border border-slate-800/90 rounded p-3 flex flex-col gap-2.5">
-                      <div>
-                        <div className="flex justify-between text-[11px] font-mono mb-1">
-                          <span className="text-slate-400">f0</span>
-                          <span className="text-slate-100 tabular-nums">
-                            {activeEv.f0_hz.toFixed(1)} Hz
-                          </span>
-                        </div>
-                        <input
-                          type="range"
-                          min={35}
-                          max={160}
-                          step={0.5}
-                          value={activeEv.f0_hz}
-                          onChange={(e) =>
-                            updateActiveEvent({
-                              f0_hz: parseFloat(e.target.value),
-                            })
-                          }
-                          aria-label="f0 frequency"
-                          className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-cyan-400"
-                        />
-                      </div>
+                  {activeEv && activeEvMetrics && (
+                    <div className="flex flex-col gap-2.5 pt-1">
+                      <PrecisionFaderControl
+                        label="f0"
+                        ariaLabel="f0 frequency"
+                        value={activeEv.f0_hz}
+                        min={25}
+                        max={180}
+                        step={0.5}
+                        displayValue={`${activeEv.f0_hz.toFixed(1)} Hz`}
+                        onChange={(v) => updateActiveEvent({ f0_hz: v })}
+                      />
+                      <PrecisionFaderControl
+                        label="Speed"
+                        ariaLabel="Speed"
+                        value={activeEv.speed_ms}
+                        min={10}
+                        max={180}
+                        step={1}
+                        displayValue={`${activeEv.speed_ms.toFixed(0)} m/s`}
+                        onChange={(v) =>
+                          updateActiveEvent({
+                            speed_ms: v,
+                            rejectedAsTraffic: undefined,
+                          })
+                        }
+                      />
+                      <PrecisionFaderControl
+                        label="Slant Range"
+                        ariaLabel="Slant range"
+                        value={activeEv.slant_m}
+                        min={15}
+                        max={4500}
+                        step={15}
+                        displayValue={`${activeEv.slant_m.toFixed(0)} m`}
+                        onChange={(v) =>
+                          updateActiveEvent({
+                            slant_m: v,
+                            rejectedAsTraffic: undefined,
+                          })
+                        }
+                      />
+                      <PrecisionFaderControl
+                        label="CPA Time"
+                        ariaLabel="CPA Time"
+                        value={activeEv.t_cpa_s}
+                        min={0}
+                        max={Math.max(60, duration || 60)}
+                        step={0.5}
+                        displayValue={`${activeEv.t_cpa_s.toFixed(1)} s`}
+                        onChange={(v) => updateActiveEvent({ t_cpa_s: v })}
+                      />
 
-                      <div>
-                        <div className="flex justify-between text-[11px] font-mono mb-1">
-                          <span className="text-slate-400">Speed</span>
-                          <span className="text-slate-100 tabular-nums">
-                            {activeEv.speed_ms.toFixed(0)} m/s
+                      {/* Wavelength & Kinematic Telemetry Readout Box */}
+                      <div
+                        data-testid="curve-wavelength-telemetry"
+                        className="border border-[#222222] bg-[#111111] divide-y divide-[#1F1F1F] text-[10.5px] font-mono tabular-nums"
+                      >
+                        <div className="flex justify-between px-2.5 py-1">
+                          <span className="text-[#A1A1AA]">WAVELENGTH λ₀</span>
+                          <span className="text-[#10B981]">
+                            {activeEvMetrics.wavelength0_m.toFixed(3)} m
                           </span>
                         </div>
-                        <input
-                          type="range"
-                          min={45}
-                          max={160}
-                          step={1}
-                          value={activeEv.speed_ms}
-                          onChange={(e) =>
-                            updateActiveEvent({
-                              speed_ms: parseFloat(e.target.value),
-                            })
-                          }
-                          aria-label="Speed"
-                          className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-cyan-400"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="flex justify-between text-[11px] font-mono mb-1">
-                          <span className="text-slate-400">Slant Range</span>
-                          <span className="text-slate-100 tabular-nums">
-                            {activeEv.slant_m.toFixed(0)} m
+                        <div className="flex justify-between px-2.5 py-1">
+                          <span className="text-[#A1A1AA]">
+                            λ_APP / λ_REC
+                          </span>
+                          <span className="text-[#FAFAFA]">
+                            {activeEvMetrics.wavelengthApp_m.toFixed(2)} m /{' '}
+                            {activeEvMetrics.wavelengthRec_m.toFixed(2)} m
                           </span>
                         </div>
-                        <input
-                          type="range"
-                          min={200}
-                          max={4500}
-                          step={25}
-                          value={activeEv.slant_m}
-                          onChange={(e) =>
-                            updateActiveEvent({
-                              slant_m: parseFloat(e.target.value),
-                            })
-                          }
-                          aria-label="Slant range"
-                          className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-cyan-400"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="flex justify-between text-[11px] font-mono mb-1">
-                          <span className="text-slate-400">CPA Time</span>
-                          <span className="text-slate-100 tabular-nums">
-                            {activeEv.t_cpa_s.toFixed(1)} s
+                        <div className="flex justify-between px-2.5 py-1">
+                          <span className="text-[#A1A1AA]">
+                            MAX SLOPE |df/dt|
+                          </span>
+                          <span className="text-[#FAFAFA]">
+                            {activeEvMetrics.maxInflectionSlope_hz_s.toFixed(2)}{' '}
+                            Hz/s
                           </span>
                         </div>
-                        <input
-                          type="range"
-                          min={0}
-                          max={Math.max(60, duration || 60)}
-                          step={0.5}
-                          value={activeEv.t_cpa_s}
-                          onChange={(e) =>
-                            updateActiveEvent({
-                              t_cpa_s: parseFloat(e.target.value),
-                            })
-                          }
-                          aria-label="CPA Time"
-                          className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-cyan-400"
-                        />
+                        <div className="flex justify-between px-2.5 py-1">
+                          <span className="text-[#A1A1AA]">SOURCE FILTER</span>
+                          <span
+                            className={
+                              activeEvMetrics.sourceClass === 'aircraft' &&
+                              !activeEv.rejectedAsTraffic
+                                ? 'text-[#10B981]'
+                                : 'text-[#F43F5E]'
+                            }
+                          >
+                            {activeEvMetrics.sourceClass === 'aircraft' &&
+                            !activeEv.rejectedAsTraffic
+                              ? 'AIRCRAFT (KEEP)'
+                              : 'CAR / TRAFFIC (REJECTED)'}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -826,74 +974,129 @@ export function App() {
               )}
             </div>
 
-            {/* Audio Filters */}
-            <div className="flex flex-col gap-2.5">
-              <span className="text-xs font-semibold text-slate-200">
-                Audio Filters
+            {/* AUDIO & TRAFFIC FILTERS SECTION */}
+            <div className="border-b border-[#1F1F1F] px-4 py-3.5 flex flex-col gap-2.5">
+              <span className="text-[10px] uppercase tracking-[0.1em] text-[#737373] font-semibold">
+                AUDIO & TRAFFIC FILTERS
               </span>
-              <div className="bg-[#0e1422] border border-slate-800/90 rounded p-3 flex flex-col gap-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-300">
-                    80 Hz High-Pass
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setHighPass80Hz((v) => !v)}
-                    className={`px-2.5 py-1 text-[11px] font-mono rounded border cursor-pointer ${
-                      highPass80Hz
-                        ? 'bg-rose-950/70 text-rose-200 border-rose-500/50'
-                        : 'bg-slate-900 text-slate-400 border-slate-800'
-                    }`}
-                  >
-                    {highPass80Hz ? 'On' : 'Off'}
-                  </button>
-                </div>
 
-                <div>
-                  <div className="flex justify-between text-[11px] font-mono mb-1">
-                    <span className="text-slate-400">Sub-Band Boost</span>
-                    <span className="text-slate-100 tabular-nums">
-                      +{bandBoostDb.toFixed(0)} dB
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={18}
-                    step={2}
-                    value={bandBoostDb}
-                    onChange={(e) => setBandBoostDb(Number(e.target.value))}
-                    aria-label="Sub-band boost"
-                    className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-cyan-400"
+              {/* Reject Ground Traffic / Passing Cars Toggle */}
+              <div className="flex items-center justify-between h-7 bg-[#111111] border border-[#222222] px-2.5">
+                <span className="text-[10px] uppercase tracking-[0.08em] text-[#A1A1AA] font-mono">
+                  REJECT CAR / TRAFFIC
+                </span>
+                <button
+                  type="button"
+                  data-testid="toggle-traffic-filter"
+                  aria-pressed={rejectGroundTraffic}
+                  onClick={() => setRejectGroundTraffic((v) => !v)}
+                  className="h-5 px-2 text-[10px] font-mono bg-[#161616] border border-[#2E2E33] text-[#FAFAFA] rounded-none flex items-center gap-1.5 cursor-pointer"
+                >
+                  <span
+                    className="w-1.5 h-1.5"
+                    style={{
+                      backgroundColor: rejectGroundTraffic
+                        ? '#10b981'
+                        : '#3f3f46',
+                    }}
                   />
-                </div>
+                  <span>{rejectGroundTraffic ? 'ON' : 'OFF'}</span>
+                </button>
+              </div>
 
-                <div>
-                  <div className="flex justify-between text-[11px] font-mono mb-1">
-                    <span className="text-slate-400">Clock Drift</span>
-                    <span className="text-slate-100 tabular-nums">
-                      {injectedDriftPpm >= 0 ? '+' : ''}
-                      {injectedDriftPpm.toFixed(1)} ppm
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={-20}
-                    max={20}
-                    step={1}
-                    value={injectedDriftPpm}
-                    onChange={(e) =>
-                      setInjectedDriftPpm(Number(e.target.value))
-                    }
-                    aria-label="Clock drift"
-                    className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-cyan-400"
+              <div className="flex items-center justify-between h-7 bg-[#111111] border border-[#222222] px-2.5">
+                <span className="text-[10px] uppercase tracking-[0.08em] text-[#A1A1AA] font-mono">
+                  80 HZ HIGH-PASS
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setHighPass80Hz((v) => !v)}
+                  className="h-5 px-2 text-[10px] font-mono bg-[#161616] border border-[#2E2E33] text-[#FAFAFA] rounded-none flex items-center gap-1.5 cursor-pointer"
+                >
+                  <span
+                    className="w-1.5 h-1.5"
+                    style={{
+                      backgroundColor: highPass80Hz ? '#f43f5e' : '#3f3f46',
+                    }}
                   />
+                  <span>{highPass80Hz ? 'ON' : 'OFF'}</span>
+                </button>
+              </div>
+
+              {/* STFT Window Resolution Selector */}
+              <div className="flex items-center justify-between h-7 bg-[#111111] border border-[#222222] px-2.5">
+                <span className="text-[10px] uppercase tracking-[0.08em] text-[#A1A1AA] font-mono">
+                  STFT FFT WINDOW
+                </span>
+                <div className="inline-flex items-center border border-[#2E2E33] divide-x divide-[#2E2E33]">
+                  {[512, 1024, 2048].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setFftSize(n)}
+                      className={`h-5 px-1.5 text-[10px] font-mono cursor-pointer ${
+                        fftSize === n
+                          ? 'bg-[#FFFFFF] text-[#000000] font-medium'
+                          : 'bg-[#161616] text-[#A1A1AA]'
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
                 </div>
               </div>
+
+              <PrecisionFaderControl
+                label="Noise Gate (Z)"
+                ariaLabel="Noise gate threshold"
+                value={contrastGateZ}
+                min={0}
+                max={4}
+                step={0.2}
+                displayValue={`${contrastGateZ.toFixed(1)} σ`}
+                onChange={(v) => setContrastGateZ(v)}
+              />
+
+              <PrecisionFaderControl
+                label="Notch Filter"
+                ariaLabel="Notch filter frequency"
+                value={notchFreqHz}
+                min={0}
+                max={300}
+                step={5}
+                displayValue={
+                  notchFreqHz > 10 ? `${notchFreqHz.toFixed(0)} Hz` : 'OFF'
+                }
+                onChange={(v) => setNotchFreqHz(v)}
+              />
+
+              <PrecisionFaderControl
+                label="Sub-Band Boost"
+                ariaLabel="Sub-band boost"
+                value={bandBoostDb}
+                min={0}
+                max={18}
+                step={2}
+                displayValue={`+${bandBoostDb.toFixed(0)} dB`}
+                onChange={(v) => setBandBoostDb(v)}
+              />
+
+              <PrecisionFaderControl
+                label="Clock Drift"
+                ariaLabel="Clock drift"
+                value={injectedDriftPpm}
+                min={-20}
+                max={20}
+                step={1}
+                displayValue={`${
+                  injectedDriftPpm >= 0 ? '+' : ''
+                }${injectedDriftPpm.toFixed(1)} ppm`}
+                onChange={(v) => setInjectedDriftPpm(v)}
+              />
             </div>
           </aside>
 
-          <main className="flex flex-col min-h-0 overflow-hidden bg-[#05080f]">
+          <main className="flex flex-col min-h-0 overflow-hidden bg-[#000000]">
             <SpectrogramViewport
               spectrogram={spectrogram}
               events={events}
@@ -909,6 +1112,20 @@ export function App() {
               onSelectEventIndex={setActiveEventIndex}
               highPass80HzActive={highPass80Hz}
               bandBoostDb={bandBoostDb}
+              soundSpeedMs={effectiveSoundSpeed}
+              contrastGateZ={contrastGateZ}
+              notchFreqHz={notchFreqHz}
+              onChangeNotchFreqHz={setNotchFreqHz}
+              rejectGroundTraffic={rejectGroundTraffic}
+              onFitCustomEvent={(fitted) => {
+                setEvents((prev) => [...prev, fitted]);
+                setActiveEventIndex(events.length);
+              }}
+              onUpdateActiveF0={(nextF0) => {
+                if (events.length > 0) {
+                  updateActiveEvent({ f0_hz: nextF0 });
+                }
+              }}
             />
           </main>
         </div>
@@ -917,49 +1134,77 @@ export function App() {
       {/* TAB 2: GEOLOCATION MAP */}
       {activeTab === 'geolocation' && (
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[320px_1fr] min-h-0 overflow-hidden">
-          <aside className="bg-[#0b101b] border-r border-slate-800/80 flex flex-col min-h-0 overflow-y-auto p-4 gap-4">
-            {/* Result Summary */}
-            <div className="bg-[#0e1422] border border-slate-800/90 rounded p-3.5 flex flex-col gap-2">
+          {/* Unboxed Full-Width Hairline Sidebar */}
+          <aside className="bg-[#0A0A0A] border-r border-[#1F1F1F] flex flex-col min-h-0 overflow-y-auto p-0">
+            {/* ESTIMATED FIX SECTION */}
+            <div className="border-b border-[#1F1F1F] px-4 py-3.5 flex flex-col gap-2.5">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-200">
-                  Estimated Fix
+                <span className="text-[10px] uppercase tracking-[0.1em] text-[#737373] font-semibold">
+                  ESTIMATED FIX
                 </span>
                 <span
                   data-testid="status-indicator"
-                  className={`text-[11px] font-mono font-semibold ${
+                  className={`text-[11px] font-mono font-semibold flex items-center gap-1.5 ${
                     inversionResult.status === 'located'
-                      ? 'text-emerald-400'
+                      ? 'text-[#10B981]'
                       : inversionResult.status === 'ambiguous'
-                      ? 'text-amber-400'
-                      : 'text-slate-400'
+                      ? 'text-[#F59E0B]'
+                      : 'text-[#737373]'
                   }`}
                 >
+                  <span
+                    className="w-1.5 h-1.5"
+                    style={{
+                      backgroundColor:
+                        inversionResult.status === 'located'
+                          ? '#10b981'
+                          : inversionResult.status === 'ambiguous'
+                          ? '#f59e0b'
+                          : '#52525b',
+                    }}
+                  />
                   {inversionResult.status.toUpperCase()}
                 </span>
               </div>
 
+              {inversionResult.rejectedTrafficEventIds.length > 0 && (
+                <div
+                  data-testid="traffic-rejection-notice"
+                  className="px-2.5 py-1.5 bg-[#111111] border border-[#262626] text-[10px] font-mono text-[#F43F5E]"
+                >
+                  FILTERED CAR/TRAFFIC CURVES:{' '}
+                  {inversionResult.rejectedTrafficEventIds.join(', ')}
+                </div>
+              )}
+
               {inversionResult.basins.length === 0 ? (
-                <p className="text-xs text-slate-500 py-1">
-                  Add Doppler curves and flight tracks to compute a fix.
+                <p className="text-[11px] font-mono text-[#737373] py-0.5">
+                  ADD DOPPLER CURVES + ADS-B TRACKS TO SOLVE FIX
                 </p>
               ) : (
-                <div className="flex flex-col gap-1.5 text-xs font-mono tabular-nums pt-1">
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Coordinates</span>
-                    <span className="text-slate-100">
+                <div className="flex flex-col divide-y divide-[#1F1F1F] border border-[#222222] bg-[#111111] text-[11px] font-mono tabular-nums">
+                  <div className="flex justify-between px-2.5 py-1.5">
+                    <span className="text-[#A1A1AA]">COORDINATES</span>
+                    <span className="text-[#FAFAFA]">
                       {inversionResult.fix.lat.toFixed(4)}°,{' '}
                       {inversionResult.fix.lon.toFixed(4)}°
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">95% Radius</span>
-                    <span className="text-slate-100">
+                  <div className="flex justify-between px-2.5 py-1.5">
+                    <span className="text-[#A1A1AA]">95% RADIUS</span>
+                    <span className="text-[#FAFAFA]">
                       ±{inversionResult.radius_m.toFixed(0)} m
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Score</span>
-                    <span className="text-cyan-400">
+                  <div className="flex justify-between px-2.5 py-1.5">
+                    <span className="text-[#A1A1AA]">100M HEATMAP GRID</span>
+                    <span className="text-[#EF4444]">
+                      {inversionResult.heatmapGrid.length} DOTS (100m)
+                    </span>
+                  </div>
+                  <div className="flex justify-between px-2.5 py-1.5">
+                    <span className="text-[#A1A1AA]">SCORE</span>
+                    <span className="text-[#10B981]">
                       {inversionResult.score.toFixed(2)}
                     </span>
                   </div>
@@ -967,14 +1212,16 @@ export function App() {
               )}
             </div>
 
-            {/* Search Bounds */}
-            <div className="border-b border-slate-800/80 pb-4 flex flex-col gap-2">
-              <span className="text-xs font-semibold text-slate-200">
-                Search Bounds
+            {/* SEARCH BOUNDS SECTION */}
+            <div className="border-b border-[#1F1F1F] px-4 py-3.5 flex flex-col gap-2.5">
+              <span className="text-[10px] uppercase tracking-[0.1em] text-[#737373] font-semibold">
+                SEARCH BOUNDS
               </span>
-              <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                <label className="flex flex-col gap-1 text-slate-400">
-                  <span>North Lat</span>
+              <div className="grid grid-cols-2 gap-2 text-[11px] font-mono tabular-nums">
+                <label className="flex flex-col gap-1 text-[#A1A1AA]">
+                  <span className="text-[10px] uppercase tracking-wider text-[#737373]">
+                    NORTH LAT
+                  </span>
                   <input
                     type="number"
                     step="0.05"
@@ -985,11 +1232,13 @@ export function App() {
                         north: parseFloat(e.target.value) || 0,
                       }))
                     }
-                    className="bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                    className="h-7 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
                   />
                 </label>
-                <label className="flex flex-col gap-1 text-slate-400">
-                  <span>South Lat</span>
+                <label className="flex flex-col gap-1 text-[#A1A1AA]">
+                  <span className="text-[10px] uppercase tracking-wider text-[#737373]">
+                    SOUTH LAT
+                  </span>
                   <input
                     type="number"
                     step="0.05"
@@ -1000,11 +1249,13 @@ export function App() {
                         south: parseFloat(e.target.value) || 0,
                       }))
                     }
-                    className="bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                    className="h-7 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
                   />
                 </label>
-                <label className="flex flex-col gap-1 text-slate-400">
-                  <span>West Lon</span>
+                <label className="flex flex-col gap-1 text-[#A1A1AA]">
+                  <span className="text-[10px] uppercase tracking-wider text-[#737373]">
+                    WEST LON
+                  </span>
                   <input
                     type="number"
                     step="0.05"
@@ -1015,11 +1266,13 @@ export function App() {
                         west: parseFloat(e.target.value) || 0,
                       }))
                     }
-                    className="bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                    className="h-7 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
                   />
                 </label>
-                <label className="flex flex-col gap-1 text-slate-400">
-                  <span>East Lon</span>
+                <label className="flex flex-col gap-1 text-[#A1A1AA]">
+                  <span className="text-[10px] uppercase tracking-wider text-[#737373]">
+                    EAST LON
+                  </span>
                   <input
                     type="number"
                     step="0.05"
@@ -1030,114 +1283,93 @@ export function App() {
                         east: parseFloat(e.target.value) || 0,
                       }))
                     }
-                    className="bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
+                    className="h-7 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
                   />
                 </label>
               </div>
             </div>
 
-            {/* Atmosphere */}
-            <div className="border-b border-slate-800/80 pb-4 flex flex-col gap-2">
+            {/* ATMOSPHERE SECTION */}
+            <div className="border-b border-[#1F1F1F] px-4 py-3.5 flex flex-col gap-2.5">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-200">
-                  Atmosphere
+                <span className="text-[10px] uppercase tracking-[0.1em] text-[#737373] font-semibold">
+                  ATMOSPHERE
                 </span>
-                <span className="text-[11px] font-mono text-cyan-400">
+                <span className="text-[11px] font-mono tabular-nums text-[#FAFAFA]">
                   c={effectiveSoundSpeed.toFixed(1)} m/s
                 </span>
               </div>
-              <div className="bg-[#0e1422] border border-slate-800/90 rounded p-3 flex flex-col gap-2.5">
-                <div>
-                  <div className="flex justify-between text-[11px] font-mono mb-1">
-                    <span className="text-slate-400">Temp</span>
-                    <span className="text-slate-100">{tempC.toFixed(1)} °C</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={-25}
-                    max={40}
-                    step={1}
-                    value={tempC}
-                    onChange={(e) => setTempC(parseFloat(e.target.value))}
-                    aria-label="Temperature"
-                    className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-cyan-400"
-                  />
-                </div>
+
+              <div className="flex flex-col gap-2.5">
+                <PrecisionFaderControl
+                  label="Temp"
+                  ariaLabel="Temperature"
+                  value={tempC}
+                  min={-25}
+                  max={40}
+                  step={1}
+                  displayValue={`${tempC.toFixed(1)} °C`}
+                  onChange={(v) => setTempC(v)}
+                />
 
                 <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <div className="flex justify-between text-[11px] font-mono mb-1">
-                      <span className="text-slate-400">Wind E</span>
-                      <span className="text-slate-100">
-                        {windEMs.toFixed(1)} m/s
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={-15}
-                      max={15}
-                      step={0.5}
-                      value={windEMs}
-                      onChange={(e) => setWindEMs(parseFloat(e.target.value))}
-                      aria-label="Wind East"
-                      className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-cyan-400"
-                    />
-                  </div>
-                  <div>
-                    <div className="flex justify-between text-[11px] font-mono mb-1">
-                      <span className="text-slate-400">Wind N</span>
-                      <span className="text-slate-100">
-                        {windNMs.toFixed(1)} m/s
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={-15}
-                      max={15}
-                      step={0.5}
-                      value={windNMs}
-                      onChange={(e) => setWindNMs(parseFloat(e.target.value))}
-                      aria-label="Wind North"
-                      className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-cyan-400"
-                    />
-                  </div>
+                  <PrecisionFaderControl
+                    label="Wind E"
+                    ariaLabel="Wind East"
+                    value={windEMs}
+                    min={-15}
+                    max={15}
+                    step={0.5}
+                    displayValue={`${windEMs.toFixed(1)} m/s`}
+                    onChange={(v) => setWindEMs(v)}
+                  />
+                  <PrecisionFaderControl
+                    label="Wind N"
+                    ariaLabel="Wind North"
+                    value={windNMs}
+                    min={-15}
+                    max={15}
+                    step={0.5}
+                    displayValue={`${windNMs.toFixed(1)} m/s`}
+                    onChange={(v) => setWindNMs(v)}
+                  />
                 </div>
               </div>
             </div>
 
-            {/* Candidate Basins */}
+            {/* CANDIDATE BASINS SECTION */}
             {inversionResult.basins.length > 0 && (
-              <div className="flex flex-col gap-2">
-                <span className="text-xs font-semibold text-slate-200">
-                  Candidate Basins
+              <div className="border-b border-[#1F1F1F] px-4 py-3.5 flex flex-col gap-2">
+                <span className="text-[10px] uppercase tracking-[0.1em] text-[#737373] font-semibold">
+                  CANDIDATE BASINS
                 </span>
-                <div className="bg-[#0e1422] border border-slate-800/90 rounded overflow-hidden">
-                  <table className="w-full text-left font-mono text-[11px] tabular-nums">
+                <div className="border border-[#262626] bg-[#111111]">
+                  <table className="w-full text-left font-mono text-[11px] tabular-nums border-collapse">
                     <thead>
-                      <tr className="border-b border-slate-800 text-slate-400 bg-slate-900/50">
+                      <tr className="border-b border-[#262626] text-[10px] uppercase tracking-wider text-[#737373] bg-[#0A0A0A]">
                         <th className="py-1.5 px-2">#</th>
-                        <th className="py-1.5 px-2">Coordinates</th>
-                        <th className="py-1.5 px-2 text-right">Score</th>
+                        <th className="py-1.5 px-2">COORDINATES</th>
+                        <th className="py-1.5 px-2 text-right">SCORE</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-800/60">
+                    <tbody className="divide-y divide-[#1F1F1F]">
                       {inversionResult.basins.slice(0, 6).map((b) => (
                         <tr
                           key={b.rank}
                           onClick={() => setSelectedBasin(b)}
                           className={`cursor-pointer transition-colors ${
                             selectedBasin?.rank === b.rank
-                              ? 'bg-cyan-950/40 text-cyan-200'
-                              : 'hover:bg-slate-800/40 text-slate-300'
+                              ? 'bg-[#1F1F22] text-[#FAFAFA]'
+                              : 'hover:bg-[#161616] text-[#A1A1AA]'
                           }`}
                         >
-                          <td className="py-1.5 px-2 font-semibold">
+                          <td className="py-1.5 px-2 font-semibold text-[#FAFAFA]">
                             {b.rank}
                           </td>
                           <td className="py-1.5 px-2">
                             {b.lat.toFixed(4)}°, {b.lon.toFixed(4)}°
                           </td>
-                          <td className="py-1.5 px-2 text-right">
+                          <td className="py-1.5 px-2 text-right text-[#10B981]">
                             {b.score.toFixed(2)}
                           </td>
                         </tr>
@@ -1149,7 +1381,7 @@ export function App() {
             )}
           </aside>
 
-          <main className="flex flex-col min-h-0 overflow-hidden bg-[#05080f]">
+          <main className="flex flex-col min-h-0 overflow-hidden bg-[#000000]">
             <GeodeticMapViewport
               bounds={bounds}
               onChangeBounds={setBounds}
@@ -1158,6 +1390,7 @@ export function App() {
               status={inversionResult.status}
               flights={flights}
               candidates={inversionResult.candidates}
+              heatmapGrid={inversionResult.heatmapGrid}
               basins={inversionResult.basins}
               selectedBasin={selectedBasin}
               onSelectBasin={setSelectedBasin}
@@ -1172,423 +1405,446 @@ export function App() {
         </div>
       )}
 
-      {/* TAB 3: FLIGHT TRACKS */}
+      {/* TAB 3: FULL-BLEED ADS-B FLIGHT TRACKS WORKSTATION TABLE */}
       {activeTab === 'flights' && (
-        <main className="flex-1 overflow-y-auto p-6 bg-[#07090e]">
-          <div className="max-w-7xl mx-auto flex flex-col gap-4">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div className="flex items-center gap-3">
-                <h1 className="text-sm font-semibold text-slate-100">
-                  ADS-B Flight Tracks
-                </h1>
-                {adsbStatusMsg && (
-                  <span className="text-xs font-mono text-cyan-400">
-                    {adsbStatusMsg}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
+        <main className="flex-1 flex flex-col min-h-0 bg-[#000000] overflow-hidden">
+          <div className="h-10 px-4 bg-[#0A0A0A] border-b border-[#1F1F1F] flex items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] uppercase tracking-[0.1em] text-[#737373] font-semibold">
+                ADS-B TELEMETRY LOG
+              </span>
+              {adsbStatusMsg && (
+                <span className="text-[11px] font-mono text-[#A1A1AA]">
+                  {adsbStatusMsg}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="inline-flex items-center border border-[#262626] divide-x divide-[#262626]">
                 <button
                   type="button"
                   data-testid="toggle-3d-trajectory-overlay"
                   aria-pressed={overlay3dTrajectory}
                   onClick={() => setOverlay3dTrajectory((v) => !v)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded border flex items-center gap-1.5 transition-colors cursor-pointer ${
+                  className={`h-7 px-2.5 text-[11px] font-mono rounded-none flex items-center gap-2 transition-colors cursor-pointer ${
                     overlay3dTrajectory
-                      ? 'bg-purple-950/70 text-purple-200 border-purple-500/60'
-                      : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                      ? 'bg-[#161616] text-[#FAFAFA]'
+                      : 'bg-[#111111] hover:bg-[#161616] text-[#A1A1AA]'
                   }`}
                 >
-                  <Box className="w-3.5 h-3.5 text-purple-400" />
+                  <span
+                    className="w-1.5 h-1.5 shrink-0"
+                    style={{
+                      backgroundColor: overlay3dTrajectory
+                        ? '#ff4f00'
+                        : '#3f3f46',
+                    }}
+                  />
+                  <Box className="w-3 h-3" />
                   <span>
                     {overlay3dTrajectory
                       ? '3D Trajectory Overlay: ON'
                       : 'Overlay 3D Trajectory'}
                   </span>
                 </button>
+
                 {overlay3dTrajectory && flights.length > 0 && (
                   <button
                     type="button"
                     data-testid="view-3d-on-map-btn"
                     onClick={() => setActiveTab('geolocation')}
-                    className="px-3 py-1.5 text-xs font-medium bg-purple-600/20 hover:bg-purple-600/30 text-purple-200 rounded border border-purple-500/40 flex items-center gap-1.5 cursor-pointer"
+                    className="h-7 px-2.5 text-[11px] font-mono bg-[#161616] hover:bg-[#1F1F22] text-[#FAFAFA] rounded-none flex items-center gap-1.5 cursor-pointer"
                   >
-                    <MapPin className="w-3.5 h-3.5 text-purple-400" />
+                    <MapPin className="w-3 h-3 text-[#FF4F00]" />
                     <span>View on Map</span>
                   </button>
                 )}
+
                 <button
                   type="button"
                   onClick={handleFetchLiveOpenSky}
                   disabled={isFetchingAdsb}
-                  className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-cyan-300 rounded border border-slate-700 flex items-center gap-1.5 cursor-pointer"
+                  className="h-7 px-2.5 text-[11px] font-mono bg-[#111111] hover:bg-[#161616] disabled:opacity-50 text-[#FAFAFA] rounded-none flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
                   {isFetchingAdsb ? 'Fetching...' : 'Fetch Live OpenSky'}
                 </button>
+
                 <button
                   type="button"
                   onClick={() => flightImportRef.current?.click()}
-                  className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 rounded border border-slate-700 flex items-center gap-1.5 cursor-pointer"
+                  className="h-7 px-2.5 text-[11px] font-mono bg-[#111111] hover:bg-[#161616] text-[#FAFAFA] rounded-none flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
-                  <Upload className="w-3.5 h-3.5 text-cyan-400" />
+                  <Upload className="w-3 h-3" />
                   Import JSON / CSV
                 </button>
-                <input
-                  ref={flightImportRef}
-                  type="file"
-                  accept=".json,.csv,application/json,text/csv"
-                  onChange={handleImportFlightsJson}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={handleAddFlight}
-                  className="px-3 py-1.5 text-xs font-medium bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Add Flight
-                </button>
               </div>
-            </div>
 
-            {flights.length === 0 ? (
-              <div className="bg-[#0b101b] border border-slate-800 rounded p-12 text-center flex flex-col items-center gap-3">
-                <p className="text-xs text-slate-400">
-                  No flight tracks loaded. Fetch live OpenSky ADS-B for your map
-                  bounds, import a JSON/CSV file, or add a flight manually.
-                </p>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleFetchLiveOpenSky}
-                    disabled={isFetchingAdsb}
-                    className="px-3.5 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded border border-slate-700 cursor-pointer"
+              <input
+                ref={flightImportRef}
+                type="file"
+                accept=".json,.csv,application/json,text/csv"
+                onChange={handleImportFlightsJson}
+                className="hidden"
+              />
+
+              <button
+                type="button"
+                onClick={handleAddFlight}
+                className="h-7 px-3 text-[11px] font-medium bg-[#FFFFFF] hover:bg-[#E5E5E5] text-[#000000] rounded-none flex items-center gap-1.5 cursor-pointer transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add Flight
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-auto bg-[#000000]">
+            <table className="w-full text-left font-mono text-xs tabular-nums border-collapse">
+              <thead className="sticky top-0 z-10 bg-[#0A0A0A] border-b border-[#1F1F1F]">
+                <tr className="text-[10px] uppercase tracking-[0.1em] text-[#737373]">
+                  <th className="py-2.5 px-3 whitespace-nowrap font-semibold">
+                    3D PATH
+                  </th>
+                  <th
+                    className="py-2.5 px-3 whitespace-nowrap font-semibold"
+                    aria-sort={
+                      flightSortField === 'callsign'
+                        ? flightSortDir === 'asc'
+                          ? 'ascending'
+                          : 'descending'
+                        : 'none'
+                    }
                   >
-                    {isFetchingAdsb ? 'Fetching...' : 'Fetch Live OpenSky'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleAddFlight}
-                    className="px-3.5 py-1.5 text-xs font-medium bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded flex items-center gap-1.5 cursor-pointer"
+                    <button
+                      type="button"
+                      data-testid="sort-flights-callsign"
+                      onClick={() => handleToggleFlightSort('callsign')}
+                      className={`inline-flex items-center gap-1.5 uppercase tracking-[0.1em] font-semibold transition-colors cursor-pointer ${
+                        flightSortField === 'callsign'
+                          ? 'text-[#FAFAFA]'
+                          : 'text-[#737373] hover:text-[#FAFAFA]'
+                      }`}
+                    >
+                      <span>CALLSIGN</span>
+                      {flightSortField === 'callsign' ? (
+                        flightSortDir === 'asc' ? (
+                          <ArrowUp className="w-3 h-3 text-[#FAFAFA]" />
+                        ) : (
+                          <ArrowDown className="w-3 h-3 text-[#FAFAFA]" />
+                        )
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 text-[#52525B]" />
+                      )}
+                    </button>
+                  </th>
+                  <th className="py-2.5 px-3 whitespace-nowrap font-semibold">
+                    AIRCRAFT
+                  </th>
+                  <th className="py-2.5 px-3 whitespace-nowrap font-semibold">
+                    TRACK (°)
+                  </th>
+                  <th
+                    className="py-2.5 px-3 whitespace-nowrap font-semibold"
+                    aria-sort={
+                      flightSortField === 'speed'
+                        ? flightSortDir === 'asc'
+                          ? 'ascending'
+                          : 'descending'
+                        : 'none'
+                    }
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                    Add Flight
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-[#0b101b] border border-slate-800 rounded overflow-x-auto">
-                <table className="w-full text-left font-mono text-xs tabular-nums">
-                  <thead>
-                    <tr className="border-b border-slate-800 text-slate-400 bg-slate-900/60">
-                      <th className="py-2.5 px-2.5 whitespace-nowrap">3D Path</th>
-                      <th
-                        className="py-2 px-2.5 whitespace-nowrap"
-                        aria-sort={
-                          flightSortField === 'callsign'
-                            ? flightSortDir === 'asc'
-                              ? 'ascending'
-                              : 'descending'
-                            : 'none'
-                        }
+                    <button
+                      type="button"
+                      data-testid="sort-flights-speed"
+                      onClick={() => handleToggleFlightSort('speed')}
+                      className={`inline-flex items-center gap-1.5 uppercase tracking-[0.1em] font-semibold transition-colors cursor-pointer ${
+                        flightSortField === 'speed'
+                          ? 'text-[#FAFAFA]'
+                          : 'text-[#737373] hover:text-[#FAFAFA]'
+                      }`}
+                    >
+                      <span>VELOCITY (M/S)</span>
+                      {flightSortField === 'speed' ? (
+                        flightSortDir === 'asc' ? (
+                          <ArrowUp className="w-3 h-3 text-[#FAFAFA]" />
+                        ) : (
+                          <ArrowDown className="w-3 h-3 text-[#FAFAFA]" />
+                        )
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 text-[#52525B]" />
+                      )}
+                    </button>
+                  </th>
+                  <th
+                    className="py-2.5 px-3 whitespace-nowrap font-semibold"
+                    aria-sort={
+                      flightSortField === 'alt'
+                        ? flightSortDir === 'asc'
+                          ? 'ascending'
+                          : 'descending'
+                        : 'none'
+                    }
+                  >
+                    <button
+                      type="button"
+                      data-testid="sort-flights-alt"
+                      onClick={() => handleToggleFlightSort('alt')}
+                      className={`inline-flex items-center gap-1.5 uppercase tracking-[0.1em] font-semibold transition-colors cursor-pointer ${
+                        flightSortField === 'alt'
+                          ? 'text-[#FAFAFA]'
+                          : 'text-[#737373] hover:text-[#FAFAFA]'
+                      }`}
+                    >
+                      <span>ALT (M)</span>
+                      {flightSortField === 'alt' ? (
+                        flightSortDir === 'asc' ? (
+                          <ArrowUp className="w-3 h-3 text-[#FAFAFA]" />
+                        ) : (
+                          <ArrowDown className="w-3 h-3 text-[#FAFAFA]" />
+                        )
+                      ) : (
+                        <ArrowUpDown className="w-3 h-3 text-[#52525B]" />
+                      )}
+                    </button>
+                  </th>
+                  <th className="py-2.5 px-3 whitespace-nowrap font-semibold">
+                    LAT
+                  </th>
+                  <th className="py-2.5 px-3 whitespace-nowrap font-semibold">
+                    LON
+                  </th>
+                  <th className="py-2.5 px-3 whitespace-nowrap font-semibold">
+                    CPA TIME (S)
+                  </th>
+                  <th className="py-2.5 px-3 whitespace-nowrap font-semibold">
+                    PILOT NOTES / COMMENTS
+                  </th>
+                  <th className="py-2.5 px-3 text-right whitespace-nowrap font-semibold">
+                    ACTION
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#141414]">
+                {flights.length === 0 ? (
+                  <tr className="border-b border-[#141414]">
+                    <td
+                      colSpan={11}
+                      className="py-16 px-4 text-center text-[11px] font-mono tracking-[0.12em] text-[#737373]"
+                    >
+                      NO ACTIVE ADS-B TRACKS IN BOUNDS
+                    </td>
+                  </tr>
+                ) : (
+                  sortedFlights.map((fl) => {
+                    const isSelectedFor3d =
+                      (selectedFlightId || flights[0]?.id) === fl.id;
+                    return (
+                      <tr
+                        key={fl.id}
+                        onClick={() => setSelectedFlightId(fl.id)}
+                        className={`transition-colors border-b border-[#141414] ${
+                          isSelectedFor3d && overlay3dTrajectory
+                            ? 'bg-[#111111]'
+                            : isSelectedFor3d
+                            ? 'bg-[#0A0A0A]'
+                            : 'hover:bg-[#0A0A0A]'
+                        }`}
                       >
-                        <button
-                          type="button"
-                          data-testid="sort-flights-callsign"
-                          onClick={() => handleToggleFlightSort('callsign')}
-                          className={`inline-flex items-center gap-1.5 font-semibold transition-colors cursor-pointer ${
-                            flightSortField === 'callsign'
-                              ? 'text-cyan-300'
-                              : 'text-slate-300 hover:text-slate-100'
-                          }`}
-                        >
-                          <span>Callsign</span>
-                          {flightSortField === 'callsign' ? (
-                            flightSortDir === 'asc' ? (
-                              <ArrowUp className="w-3.5 h-3.5 text-cyan-400" />
-                            ) : (
-                              <ArrowDown className="w-3.5 h-3.5 text-cyan-400" />
-                            )
-                          ) : (
-                            <ArrowUpDown className="w-3.5 h-3.5 text-slate-500" />
-                          )}
-                        </button>
-                      </th>
-                      <th className="py-2.5 px-2.5 whitespace-nowrap">Aircraft</th>
-                      <th className="py-2.5 px-2.5 whitespace-nowrap">Heading (°)</th>
-                      <th
-                        className="py-2 px-2.5 whitespace-nowrap"
-                        aria-sort={
-                          flightSortField === 'speed'
-                            ? flightSortDir === 'asc'
-                              ? 'ascending'
-                              : 'descending'
-                            : 'none'
-                        }
-                      >
-                        <button
-                          type="button"
-                          data-testid="sort-flights-speed"
-                          onClick={() => handleToggleFlightSort('speed')}
-                          className={`inline-flex items-center gap-1.5 font-semibold transition-colors cursor-pointer ${
-                            flightSortField === 'speed'
-                              ? 'text-cyan-300'
-                              : 'text-slate-300 hover:text-slate-100'
-                          }`}
-                        >
-                          <span>Speed (m/s)</span>
-                          {flightSortField === 'speed' ? (
-                            flightSortDir === 'asc' ? (
-                              <ArrowUp className="w-3.5 h-3.5 text-cyan-400" />
-                            ) : (
-                              <ArrowDown className="w-3.5 h-3.5 text-cyan-400" />
-                            )
-                          ) : (
-                            <ArrowUpDown className="w-3.5 h-3.5 text-slate-500" />
-                          )}
-                        </button>
-                      </th>
-                      <th
-                        className="py-2 px-2.5 whitespace-nowrap"
-                        aria-sort={
-                          flightSortField === 'alt'
-                            ? flightSortDir === 'asc'
-                              ? 'ascending'
-                              : 'descending'
-                            : 'none'
-                        }
-                      >
-                        <button
-                          type="button"
-                          data-testid="sort-flights-alt"
-                          onClick={() => handleToggleFlightSort('alt')}
-                          className={`inline-flex items-center gap-1.5 font-semibold transition-colors cursor-pointer ${
-                            flightSortField === 'alt'
-                              ? 'text-cyan-300'
-                              : 'text-slate-300 hover:text-slate-100'
-                          }`}
-                        >
-                          <span>Alt (m)</span>
-                          {flightSortField === 'alt' ? (
-                            flightSortDir === 'asc' ? (
-                              <ArrowUp className="w-3.5 h-3.5 text-cyan-400" />
-                            ) : (
-                              <ArrowDown className="w-3.5 h-3.5 text-cyan-400" />
-                            )
-                          ) : (
-                            <ArrowUpDown className="w-3.5 h-3.5 text-slate-500" />
-                          )}
-                        </button>
-                      </th>
-                      <th className="py-2.5 px-2.5 whitespace-nowrap">CPA Lat</th>
-                      <th className="py-2.5 px-2.5 whitespace-nowrap">CPA Lon</th>
-                      <th className="py-2.5 px-2.5 whitespace-nowrap">CPA Time (s)</th>
-                      <th className="py-2.5 px-2.5 whitespace-nowrap">Pilot Notes / Comments</th>
-                      <th className="py-2.5 px-2.5 text-right whitespace-nowrap">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/70">
-                    {sortedFlights.map((fl) => {
-                      const isSelectedFor3d =
-                        (selectedFlightId || flights[0]?.id) === fl.id;
-                      return (
-                        <tr
-                          key={fl.id}
-                          onClick={() => setSelectedFlightId(fl.id)}
-                          className={`transition-colors ${
-                            isSelectedFor3d && overlay3dTrajectory
-                              ? 'bg-purple-950/20 hover:bg-purple-950/30'
-                              : isSelectedFor3d
-                              ? 'bg-slate-900/50 hover:bg-slate-900/70'
-                              : 'hover:bg-slate-900/30'
-                          }`}
-                        >
-                          <td className="py-2 px-2.5">
-                            <button
-                              type="button"
-                              data-testid="select-flight-3d-btn"
-                              aria-pressed={
-                                isSelectedFor3d && overlay3dTrajectory
+                        <td className="py-2 px-3">
+                          <button
+                            type="button"
+                            data-testid="select-flight-3d-btn"
+                            aria-pressed={
+                              isSelectedFor3d && overlay3dTrajectory
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isSelectedFor3d && overlay3dTrajectory) {
+                                setOverlay3dTrajectory(false);
+                              } else {
+                                setSelectedFlightId(fl.id);
+                                setOverlay3dTrajectory(true);
                               }
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (isSelectedFor3d && overlay3dTrajectory) {
-                                  setOverlay3dTrajectory(false);
-                                } else {
-                                  setSelectedFlightId(fl.id);
-                                  setOverlay3dTrajectory(true);
-                                }
+                            }}
+                            className={`h-7 px-2.5 text-[11px] font-mono rounded-none border flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer ${
+                              isSelectedFor3d && overlay3dTrajectory
+                                ? 'bg-[#161616] text-[#FAFAFA] border-[#3F3F46]'
+                                : isSelectedFor3d
+                                ? 'bg-[#111111] text-[#FAFAFA] border-[#2E2E33]'
+                                : 'bg-[#111111] text-[#A1A1AA] border-[#262626] hover:text-[#FAFAFA]'
+                            }`}
+                          >
+                            <span
+                              className="w-1.5 h-1.5 shrink-0"
+                              style={{
+                                backgroundColor:
+                                  isSelectedFor3d && overlay3dTrajectory
+                                    ? '#ff4f00'
+                                    : '#3f3f46',
                               }}
-                              className={`px-2 py-1 text-[11px] font-mono rounded border flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
-                                isSelectedFor3d && overlay3dTrajectory
-                                  ? 'bg-purple-950/80 text-purple-200 border-purple-500/60'
-                                  : isSelectedFor3d
-                                  ? 'bg-slate-800 text-cyan-300 border-slate-700'
-                                  : 'bg-[#0e1422] text-slate-400 border-slate-800 hover:text-slate-200'
-                              }`}
-                            >
-                              <Box className="w-3 h-3 shrink-0" />
-                              <span>
-                                {isSelectedFor3d && overlay3dTrajectory
-                                  ? '3D Active'
-                                  : '3D Path'}
-                              </span>
-                            </button>
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <input
-                              type="text"
-                              aria-label="Flight callsign"
-                              value={fl.callsign}
-                              onChange={(e) =>
-                                handleUpdateFlight(fl.id, {
-                                  callsign: e.target.value,
-                                })
-                              }
-                              className="w-20 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
                             />
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <select
-                              aria-label="Aircraft type"
-                              value={fl.aircraft}
-                              onChange={(e) =>
-                                handleUpdateFlight(fl.id, {
-                                  aircraft: e.target.value,
-                                })
-                              }
-                              className="bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                            >
-                              <option value="C172">C172</option>
-                              <option value="C182">C182</option>
-                              <option value="SR22">SR22</option>
-                              <option value="DA40">DA40</option>
-                              <option value="PA34">PA34</option>
-                              <option value="C208">C208</option>
-                            </select>
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <input
-                              type="number"
-                              aria-label="Heading degrees"
-                              value={fl.heading_deg}
-                              onChange={(e) =>
-                                handleUpdateFlight(fl.id, {
-                                  heading_deg: parseFloat(e.target.value) || 0,
-                                })
-                              }
-                              className="w-16 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <input
-                              type="number"
-                              aria-label="Flight speed m/s"
-                              value={fl.speed_ms}
-                              onChange={(e) =>
-                                handleUpdateFlight(fl.id, {
-                                  speed_ms: parseFloat(e.target.value) || 0,
-                                })
-                              }
-                              className="w-16 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <input
-                              type="number"
-                              aria-label="Flight altitude meters"
-                              value={fl.alt_m}
-                              onChange={(e) =>
-                                handleUpdateFlight(fl.id, {
-                                  alt_m: parseFloat(e.target.value) || 0,
-                                })
-                              }
-                              className="w-16 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <input
-                              type="number"
-                              step="0.01"
-                              aria-label="CPA latitude"
-                              value={fl.cpa?.lat ?? 0}
-                              onChange={(e) =>
-                                handleUpdateFlight(
-                                  fl.id,
-                                  {},
-                                  { lat: parseFloat(e.target.value) || 0 }
-                                )
-                              }
-                              className="w-20 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <input
-                              type="number"
-                              step="0.01"
-                              aria-label="CPA longitude"
-                              value={fl.cpa?.lon ?? 0}
-                              onChange={(e) =>
-                                handleUpdateFlight(
-                                  fl.id,
-                                  {},
-                                  { lon: parseFloat(e.target.value) || 0 }
-                                )
-                              }
-                              className="w-20 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <input
-                              type="number"
-                              aria-label="CPA time seconds"
-                              value={fl.cpa?.time_s ?? 0}
-                              onChange={(e) =>
-                                handleUpdateFlight(
-                                  fl.id,
-                                  {},
-                                  { time_s: parseFloat(e.target.value) || 0 }
-                                )
-                              }
-                              className="w-16 bg-[#0e1422] border border-slate-800 rounded px-2 py-1 text-slate-100"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5 min-w-[200px]">
-                            <textarea
-                              rows={2}
-                              aria-label="Pilot notes or mission comments"
-                              placeholder="Add pilot notes or mission comments..."
-                              value={fl.notes ?? ''}
-                              onChange={(e) =>
-                                handleUpdateFlight(fl.id, {
-                                  notes: e.target.value,
-                                })
-                              }
-                              className="w-full min-w-[180px] bg-[#0e1422] border border-slate-800 focus:border-cyan-500/60 focus:outline-none rounded px-2.5 py-1.5 text-slate-100 placeholder:text-slate-600 font-sans text-xs resize-y leading-relaxed"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5 text-right">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setFlights((prev) =>
-                                  prev.filter((item) => item.id !== fl.id)
-                                );
-                              }}
-                              className="p-1.5 text-slate-400 hover:text-rose-400 cursor-pointer"
-                              aria-label="Delete flight"
-                            >
-                              <Trash2 className="w-4 h-4 inline" />
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                            <Box className="w-3 h-3 shrink-0" />
+                            <span>
+                              {isSelectedFor3d && overlay3dTrajectory
+                                ? '3D Active'
+                                : '3D Path'}
+                            </span>
+                          </button>
+                        </td>
+                        <td className="py-2 px-3">
+                          <input
+                            type="text"
+                            aria-label="Flight callsign"
+                            value={fl.callsign}
+                            onChange={(e) =>
+                              handleUpdateFlight(fl.id, {
+                                callsign: e.target.value,
+                              })
+                            }
+                            className="h-7 w-24 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
+                          />
+                        </td>
+                        <td className="py-2 px-3">
+                          <select
+                            aria-label="Aircraft type"
+                            value={fl.aircraft}
+                            onChange={(e) =>
+                              handleUpdateFlight(fl.id, {
+                                aircraft: e.target.value,
+                              })
+                            }
+                            className="h-7 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
+                          >
+                            <option value="C172">C172</option>
+                            <option value="C182">C182</option>
+                            <option value="SR22">SR22</option>
+                            <option value="DA40">DA40</option>
+                            <option value="PA34">PA34</option>
+                            <option value="C208">C208</option>
+                          </select>
+                        </td>
+                        <td className="py-2 px-3">
+                          <input
+                            type="number"
+                            aria-label="Heading degrees"
+                            value={fl.heading_deg}
+                            onChange={(e) =>
+                              handleUpdateFlight(fl.id, {
+                                heading_deg: parseFloat(e.target.value) || 0,
+                              })
+                            }
+                            className="h-7 w-16 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
+                          />
+                        </td>
+                        <td className="py-2 px-3">
+                          <input
+                            type="number"
+                            aria-label="Flight speed m/s"
+                            value={fl.speed_ms}
+                            onChange={(e) =>
+                              handleUpdateFlight(fl.id, {
+                                speed_ms: parseFloat(e.target.value) || 0,
+                              })
+                            }
+                            className="h-7 w-16 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
+                          />
+                        </td>
+                        <td className="py-2 px-3">
+                          <input
+                            type="number"
+                            aria-label="Flight altitude meters"
+                            value={fl.alt_m}
+                            onChange={(e) =>
+                              handleUpdateFlight(fl.id, {
+                                alt_m: parseFloat(e.target.value) || 0,
+                              })
+                            }
+                            className="h-7 w-20 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
+                          />
+                        </td>
+                        <td className="py-2 px-3">
+                          <input
+                            type="number"
+                            step="0.01"
+                            aria-label="CPA latitude"
+                            value={fl.cpa?.lat ?? 0}
+                            onChange={(e) =>
+                              handleUpdateFlight(
+                                fl.id,
+                                {},
+                                { lat: parseFloat(e.target.value) || 0 }
+                              )
+                            }
+                            className="h-7 w-20 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
+                          />
+                        </td>
+                        <td className="py-2 px-3">
+                          <input
+                            type="number"
+                            step="0.01"
+                            aria-label="CPA longitude"
+                            value={fl.cpa?.lon ?? 0}
+                            onChange={(e) =>
+                              handleUpdateFlight(
+                                fl.id,
+                                {},
+                                { lon: parseFloat(e.target.value) || 0 }
+                              )
+                            }
+                            className="h-7 w-20 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
+                          />
+                        </td>
+                        <td className="py-2 px-3">
+                          <input
+                            type="number"
+                            aria-label="CPA time seconds"
+                            value={fl.cpa?.time_s ?? 0}
+                            onChange={(e) =>
+                              handleUpdateFlight(
+                                fl.id,
+                                {},
+                                { time_s: parseFloat(e.target.value) || 0 }
+                              )
+                            }
+                            className="h-7 w-16 bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] outline-none rounded-none px-2 text-[#FAFAFA]"
+                          />
+                        </td>
+                        <td className="py-2 px-3 min-w-[220px]">
+                          <textarea
+                            rows={2}
+                            aria-label="Pilot notes or mission comments"
+                            placeholder="Add pilot notes or mission comments..."
+                            value={fl.notes ?? ''}
+                            onChange={(e) =>
+                              handleUpdateFlight(fl.id, {
+                                notes: e.target.value,
+                              })
+                            }
+                            className="w-full min-w-[200px] bg-[#111111] border border-[#262626] focus:border-[#FFFFFF] focus:outline-none rounded-none px-2.5 py-1 text-[#FAFAFA] placeholder:text-[#52525B] font-sans text-xs resize-y leading-relaxed"
+                          />
+                        </td>
+                        <td className="py-2 px-3 text-right">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFlights((prev) =>
+                                prev.filter((item) => item.id !== fl.id)
+                              );
+                            }}
+                            className="h-7 w-7 bg-[#111111] hover:bg-[#161616] border border-[#262626] text-[#A1A1AA] hover:text-[#F43F5E] inline-flex items-center justify-center rounded-none cursor-pointer transition-colors"
+                            aria-label="Delete flight"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
           </div>
         </main>
       )}
