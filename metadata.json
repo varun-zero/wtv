@@ -1,0 +1,5 @@
+{
+  "name": "SkyPrint Workbench",
+  "description": "Aircraft-Doppler acoustic geolocation workbench with embedded scenario telemetry and pre-rendered flyover audio.",
+  "requestFramePermissions": []
+}

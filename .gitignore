@@ -9,6 +9,11 @@ venv/
 # Generated audio cache
 skyprint/skyprint/audio_cache/
 
+# Node / Vite
+node_modules/
+dist/
+.vite/
+
 # OS / editor
 .DS_Store
 Thumbs.db
