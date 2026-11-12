@@ -22,7 +22,7 @@ import {
   runGeolocationInversion,
   sortFlights,
 } from './engine/solver';
-import { GeoBounds } from './engine/geo';
+import { GeoBounds, greatCircleDistance } from './engine/geo';
 import { pathSoundSpeed } from './engine/atmosphere';
 import { ForensicVideoMonitor } from './components/ForensicVideoMonitor';
 import { SpectrogramViewport } from './components/SpectrogramViewport';
@@ -150,6 +150,7 @@ export function App() {
   }, []);
 
   const [selectedBasin, setSelectedBasin] = useState<BasinSummary | null>(null);
+  const [groundTruth, setGroundTruth] = useState<{ lat: number; lon: number } | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const flightImportRef = useRef<HTMLInputElement | null>(null);
 
@@ -522,6 +523,127 @@ export function App() {
 
   const [isFetchingAdsb, setIsFetchingAdsb] = useState<boolean>(false);
   const [adsbStatusMsg, setAdsbStatusMsg] = useState<string | null>(null);
+
+  const handleLoadGroundTruthBenchmark = async () => {
+    // 1. Set bounds, atmospheric priors, and ground truth pin
+    setBounds({
+      west: -122.55,
+      south: 37.2,
+      east: -122.05,
+      north: 37.6,
+    });
+    setTempC(15.0);
+    setWindEMs(3.0);
+    setWindNMs(-2.0);
+    setGroundTruth({ lat: 37.4, lon: -122.3 });
+
+    // 2. Set Doppler flyover events
+    const benchmarkEvents: FittedDopplerEvent[] = [
+      {
+        id: 'EV01-C172',
+        f0_hz: 85.0,
+        speed_ms: 100.0,
+        slant_m: 1500.0,
+        t_cpa_s: 24.5,
+        snr_db: 48.5,
+        orders: [1, 2, 3],
+        curves: [],
+      },
+      {
+        id: 'EV02-SR22',
+        f0_hz: 115.0,
+        speed_ms: 110.0,
+        slant_m: 2200.0,
+        t_cpa_s: 75.0,
+        snr_db: 52.0,
+        orders: [1, 2, 3],
+        curves: [],
+      },
+    ];
+    setEvents(benchmarkEvents);
+    setActiveEventIndex(0);
+
+    // 3. Set Benchmark Flight Tracks
+    const benchmarkFlights: ScenarioFlight[] = [
+      {
+        id: 'SKY01',
+        callsign: 'SKY01',
+        aircraft: 'C172',
+        aircraft_name: 'Cessna 172 Skyhawk',
+        heading_deg: 90.0,
+        speed_ms: 100.0,
+        speed_kts: 194.4,
+        alt_m: 1500.0,
+        bpf_nominal_hz: 85.0,
+        is_target: true,
+        cpa: {
+          lat: 37.4,
+          lon: -122.3,
+          time_s: 24.5,
+          slant_m: 1500.0,
+        },
+        waypoints: [
+          { t: 0, lat: 37.4, lon: -122.55, alt_m: 1500, speed_ms: 100 },
+          { t: 50, lat: 37.4, lon: -122.05, alt_m: 1500, speed_ms: 100 },
+        ],
+      },
+      {
+        id: 'SKY02',
+        callsign: 'SKY02',
+        aircraft: 'SR22',
+        aircraft_name: 'Cirrus SR22 G6',
+        heading_deg: 270.0,
+        speed_ms: 110.0,
+        speed_kts: 213.8,
+        alt_m: 2200.0,
+        bpf_nominal_hz: 115.0,
+        is_target: true,
+        cpa: {
+          lat: 37.4,
+          lon: -122.3,
+          time_s: 75.0,
+          slant_m: 2200.0,
+        },
+        waypoints: [
+          { t: 50, lat: 37.4, lon: -122.05, alt_m: 2200, speed_ms: 110 },
+          { t: 100, lat: 37.4, lon: -122.55, alt_m: 2200, speed_ms: 110 },
+        ],
+      },
+    ];
+    setFlights(benchmarkFlights);
+
+    // 4. Load benchmark audio file if available
+    try {
+      const res = await fetch('/audio/A-crossing-baseline.wav');
+      if (res.ok) {
+        const arrayBuf = await res.arrayBuffer();
+        const AudioCtx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext })
+            .webkitAudioContext;
+        const ctx = new AudioCtx({ sampleRate: 8000 });
+        const decoded = await ctx.decodeAudioData(arrayBuf);
+        const chan = decoded.getChannelData(0);
+        const maxLen = Math.min(chan.length, 8000 * 120);
+        const slice = new Float32Array(maxLen);
+        slice.set(chan.subarray(0, maxLen));
+        setRawPcmBuffer(slice);
+        setSampleRate(decoded.sampleRate);
+        setDuration(maxLen / decoded.sampleRate);
+        setUploadedFileName('A-crossing-baseline.wav');
+        if (audioElRef.current) {
+          audioElRef.current.src = '/audio/A-crossing-baseline.wav';
+          audioElRef.current.load();
+        }
+        await ctx.close();
+      }
+    } catch {
+      // Audio load optional fallback
+    }
+
+    setAdsbStatusMsg('Loaded Benchmark: Ground Truth at (37.4000°, -122.3000°).');
+    setActiveTab('geolocation');
+  };
 
   const handleLoadSampleScenarioFlights = () => {
     const centerLat = (bounds.south + bounds.north) * 0.5;
@@ -953,6 +1075,15 @@ export function App() {
         </nav>
 
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleLoadGroundTruthBenchmark}
+            className="h-7 px-2.5 text-[11px] font-mono bg-[#111111] hover:bg-[#161616] text-[#10B981] rounded-none border border-[#2E2E33] flex items-center gap-1.5 transition-colors cursor-pointer"
+            title="Load benchmark ground truth test scenario (San Francisco Bay, Truth: 37.4000°, -122.3000°)"
+          >
+            <Sparkles className="w-3 h-3 text-[#10B981]" />
+            Test Ground Truth
+          </button>
           <button
             type="button"
             onClick={handleExportGeoJson}
@@ -1432,6 +1563,20 @@ export function App() {
                       {inversionResult.score.toFixed(2)}
                     </span>
                   </div>
+                  {groundTruth && (
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-[#0D1A14]">
+                      <span className="text-[#10B981] font-semibold shrink-0">ACCURACY ERROR</span>
+                      <span className="text-[#FAFAFA] font-bold text-right truncate">
+                        {greatCircleDistance(
+                          inversionResult.fix.lat,
+                          inversionResult.fix.lon,
+                          groundTruth.lat,
+                          groundTruth.lon
+                        ).toFixed(0)}{' '}
+                        m
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1624,6 +1769,7 @@ export function App() {
               onSelectFlight={setSelectedFlightId}
               show3dTrajectory={overlay3dTrajectory}
               onToggle3dTrajectory={() => setOverlay3dTrajectory((v) => !v)}
+              groundTruth={groundTruth}
             />
           </main>
         </div>

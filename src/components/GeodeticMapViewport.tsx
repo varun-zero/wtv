@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
-import { GeoBounds, deltaLonSigned, normalizeLon } from '../engine/geo';
+import { GeoBounds, deltaLonSigned, normalizeLon, greatCircleDistance } from '../engine/geo';
 import {
   BasinSummary,
   CandidatePoint,
@@ -80,6 +80,7 @@ interface GeodeticMapViewportProps {
   onSelectFlight?: (flightId: string) => void;
   show3dTrajectory?: boolean;
   onToggle3dTrajectory?: () => void;
+  groundTruth?: { lat: number; lon: number } | null;
 }
 
 export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
@@ -100,6 +101,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
   onSelectFlight,
   show3dTrajectory = false,
   onToggle3dTrajectory,
+  groundTruth = null,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -537,6 +539,53 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
         }
       );
     }
+
+    // 6. Ground Truth Target Reticle & Accuracy Error Vector
+    if (groundTruth) {
+      const truthMarker = L.circleMarker([groundTruth.lat, groundTruth.lon], {
+        radius: 8,
+        color: '#ffffff',
+        weight: 2,
+        fillColor: '#10b981',
+        fillOpacity: 1,
+      }).addTo(group);
+
+      truthMarker.bindTooltip(
+        `<span style="color:#10b981;font-weight:700">● GROUND TRUTH</span><br/>${groundTruth.lat.toFixed(4)}°, ${groundTruth.lon.toFixed(4)}°`,
+        {
+          permanent: true,
+          direction: 'top',
+          className: 'skyprint-tooltip',
+          offset: [0, -8],
+        }
+      );
+
+      if (basins.length > 0 && status !== 'inconclusive') {
+        const errorLine = L.polyline(
+          [
+            [fix.lat, fix.lon],
+            [groundTruth.lat, groundTruth.lon],
+          ],
+          {
+            color: '#10b981',
+            weight: 2,
+            dashArray: '4, 4',
+          }
+        ).addTo(group);
+
+        const distM = greatCircleDistance(
+          fix.lat,
+          fix.lon,
+          groundTruth.lat,
+          groundTruth.lon
+        );
+        errorLine.bindTooltip(`Accuracy Error: ${distM.toFixed(0)} m`, {
+          permanent: true,
+          direction: 'center',
+          className: 'skyprint-tooltip',
+        });
+      }
+    }
   }, [
     bounds,
     fix,
@@ -560,6 +609,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
     active3dTrajectory,
     referenceReceiver,
     onSelectFlight,
+    groundTruth,
   ]);
 
   const handleFitSearchBounds = () => {
