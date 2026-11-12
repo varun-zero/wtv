@@ -662,6 +662,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
               type="button"
               onClick={() => setShowCorridors((v) => !v)}
               aria-pressed={showCorridors}
+              aria-label="Toggle flight acoustic corridors overlay"
               className={`h-7 px-2.5 text-[11px] font-mono rounded-none flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 showCorridors
                   ? 'bg-[#161616] text-[#FAFAFA]'
@@ -681,6 +682,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
               type="button"
               onClick={() => setShowGrid((v) => !v)}
               aria-pressed={showGrid}
+              aria-label="Toggle coarse geodetic grid"
               className={`h-7 px-2.5 text-[11px] font-mono rounded-none flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 showGrid
                   ? 'bg-[#161616] text-[#FAFAFA]'
@@ -728,6 +730,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
               type="button"
               data-testid="zoom-to-heatmap-btn"
               onClick={handleZoomToHeatmapFix}
+              aria-label="Zoom to 100m dot-grid heatmap around estimated fix"
               className="h-7 px-2.5 text-[11px] font-mono rounded-none bg-[#111111] hover:bg-[#161616] text-[#FAFAFA] flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               title="Zoom to 100m dot-grid heatmap around estimated fix"
             >
@@ -739,6 +742,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
             <button
               type="button"
               onClick={handleSetBoundsFromMapView}
+              aria-label="Set search bounding box to current map viewport"
               className="h-7 px-2.5 text-[11px] font-mono rounded-none bg-[#111111] hover:bg-[#161616] text-[#FAFAFA] flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               title="Set search bounding box to current map viewport"
             >
@@ -803,6 +807,7 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
                   <button
                     type="button"
                     onClick={() => setInvertHeatmapRamp((v) => !v)}
+                    aria-label="Invert Green/Red heatmap polarity"
                     className="px-1.5 py-0.5 bg-[#111111] hover:bg-[#161616] border border-[#262626] text-[9px] text-[#FAFAFA] cursor-pointer"
                     title="Invert Green/Red heatmap polarity"
                   >
@@ -841,14 +846,14 @@ export const GeodeticMapViewport: React.FC<GeodeticMapViewportProps> = ({
         {active3dTrajectory && (
           <div
             data-testid="trajectory-3d-hud"
-            className="absolute bottom-6 right-3 z-[400] w-72 bg-[#0A0A0A] border border-[#262626] rounded-none p-3 pointer-events-auto"
+            className="absolute bottom-6 right-3 z-[400] w-72 max-w-[calc(100%-24px)] bg-[#0A0A0A] border border-[#262626] rounded-none p-3 pointer-events-auto"
           >
-            <div className="flex items-center justify-between border-b border-[#1F1F1F] pb-1.5 mb-2">
-              <div className="flex items-center gap-1.5 text-[11px] font-mono font-semibold text-[#FAFAFA]">
-                <span className="w-1.5 h-1.5 bg-[#FF4F00] inline-block" />
-                <span>3D Trajectory · {active3dTrajectory.callsign}</span>
+            <div className="flex items-center justify-between border-b border-[#1F1F1F] pb-1.5 mb-2 gap-2">
+              <div className="flex items-center gap-1.5 text-[11px] font-mono font-semibold text-[#FAFAFA] truncate min-w-0">
+                <span className="w-1.5 h-1.5 bg-[#FF4F00] inline-block shrink-0" />
+                <span className="truncate">3D Trajectory · {active3dTrajectory.callsign}</span>
               </div>
-              <span className="text-[10px] font-mono text-[#737373]">
+              <span className="text-[10px] font-mono text-[#737373] shrink-0">
                 {active3dTrajectory.aircraft}
               </span>
             </div>

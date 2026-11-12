@@ -925,6 +925,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
             <button
               type="button"
               data-testid="spec-tool-inspect"
+              aria-pressed={toolMode === 'inspect'}
               onClick={() => setToolMode('inspect')}
               className={`h-7 px-2 text-[10px] font-mono uppercase tracking-wider rounded-none flex items-center gap-1 cursor-pointer ${
                 toolMode === 'inspect'
@@ -939,6 +940,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
             <button
               type="button"
               data-testid="spec-tool-harmonic"
+              aria-pressed={toolMode === 'harmonic_comb'}
               onClick={() => setToolMode('harmonic_comb')}
               className={`h-7 px-2 text-[10px] font-mono uppercase tracking-wider rounded-none flex items-center gap-1 cursor-pointer ${
                 toolMode === 'harmonic_comb'
@@ -953,6 +955,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
             <button
               type="button"
               data-testid="spec-tool-caliper"
+              aria-pressed={toolMode === 'caliper'}
               onClick={() => setToolMode('caliper')}
               className={`h-7 px-2 text-[10px] font-mono uppercase tracking-wider rounded-none flex items-center gap-1 cursor-pointer ${
                 toolMode === 'caliper'
@@ -967,6 +970,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
             <button
               type="button"
               data-testid="spec-tool-pick"
+              aria-pressed={toolMode === 'pick_points'}
               onClick={() => setToolMode('pick_points')}
               className={`h-7 px-2 text-[10px] font-mono uppercase tracking-wider rounded-none flex items-center gap-1 cursor-pointer ${
                 toolMode === 'pick_points'
@@ -981,6 +985,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
             <button
               type="button"
               data-testid="spec-tool-notch"
+              aria-pressed={toolMode === 'notch'}
               onClick={() => setToolMode('notch')}
               className={`h-7 px-2 text-[10px] font-mono uppercase tracking-wider rounded-none flex items-center gap-1 cursor-pointer ${
                 toolMode === 'notch'
@@ -1069,7 +1074,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
 
       {/* Contextual Action Bar for Caliper / Pick Points / Notch */}
       {(caliperMetrics || pickedPoints.length > 0 || notchFreqHz > 10) && (
-        <div className="h-8 px-4 bg-[#0A0A0A] border-b border-[#1F1F1F] flex items-center justify-between text-[11px] font-mono tabular-nums text-[#FAFAFA] shrink-0">
+        <div className="h-8 px-4 bg-[#0A0A0A] border-b border-[#1F1F1F] flex items-center justify-between text-[11px] font-mono tabular-nums text-[#FAFAFA] shrink-0 overflow-x-auto whitespace-nowrap gap-3">
           {caliperMetrics && (
             <div className="flex items-center gap-3">
               <span className="text-[#F59E0B] font-semibold">
@@ -1087,6 +1092,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
               <button
                 type="button"
                 onClick={handleFitFromCaliper}
+                aria-label="Fit Doppler curve from caliper measurement"
                 className="h-6 px-2 bg-[#FFFFFF] text-[#000000] font-medium rounded-none cursor-pointer"
               >
                 + Fit Curve from Caliper
@@ -1097,6 +1103,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
                   setCaliperPtA(null);
                   setCaliperPtB(null);
                 }}
+                aria-label="Clear caliper measurement points"
                 className="h-6 px-2 bg-[#111111] border border-[#262626] text-[#A1A1AA] hover:text-[#FAFAFA] rounded-none cursor-pointer"
               >
                 Clear
@@ -1113,6 +1120,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
                 type="button"
                 disabled={pickedPoints.length < 2}
                 onClick={handleFitFromPickedPoints}
+                aria-label={`Fit Doppler curve from ${pickedPoints.length} picked points`}
                 className="h-6 px-2 bg-[#FFFFFF] disabled:opacity-40 text-[#000000] font-medium rounded-none cursor-pointer"
               >
                 Fit Doppler Curve ({pickedPoints.length} pts)
@@ -1120,6 +1128,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
               <button
                 type="button"
                 onClick={() => setPickedPoints([])}
+                aria-label="Clear picked trace points"
                 className="h-6 px-2 bg-[#111111] border border-[#262626] text-[#A1A1AA] hover:text-[#F43F5E] rounded-none flex items-center gap-1 cursor-pointer"
               >
                 <Trash2 className="w-3 h-3" />
@@ -1138,6 +1147,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
                 <button
                   type="button"
                   onClick={() => onChangeNotchFreqHz(0)}
+                  aria-label="Disable active notch filter"
                   className="h-6 px-2 bg-[#111111] border border-[#262626] text-[#A1A1AA] hover:text-[#FAFAFA] rounded-none cursor-pointer"
                 >
                   Disable Notch
@@ -1191,20 +1201,20 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
         data-testid="wavelength-analyzer-bar"
         className="h-24 bg-[#0A0A0A] border-t border-[#1F1F1F] flex flex-col shrink-0"
       >
-        <div className="h-7 px-4 border-b border-[#1F1F1F] flex items-center justify-between text-[10px] font-mono tabular-nums">
-          <div className="flex items-center gap-4">
-            <span className="uppercase tracking-[0.1em] text-[#737373] font-semibold">
+        <div className="h-7 px-4 border-b border-[#1F1F1F] flex items-center justify-between text-[10px] font-mono tabular-nums overflow-x-auto whitespace-nowrap gap-4 shrink-0">
+          <div className="flex items-center gap-4 shrink-0">
+            <span className="uppercase tracking-[0.1em] text-[#737373] font-semibold shrink-0">
               SPECTRUM & WAVELENGTH ANALYZER (c={soundSpeedMs.toFixed(1)} m/s)
             </span>
             {activeEv && activeEvMetrics && (
               <>
-                <span className="text-[#A1A1AA]">
+                <span className="text-[#A1A1AA] shrink-0">
                   FUNDAMENTAL:{' '}
                   <strong className="text-[#FAFAFA]">
                     f₀={activeEv.f0_hz.toFixed(1)} Hz
                   </strong>
                 </span>
-                <span className="text-[#A1A1AA]">
+                <span className="text-[#A1A1AA] shrink-0">
                   WAVELENGTH:{' '}
                   <strong className="text-[#10B981]">
                     λ₀={activeEvMetrics.wavelength0_m.toFixed(3)} m
@@ -1212,13 +1222,13 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
                   (λ_app={activeEvMetrics.wavelengthApp_m.toFixed(2)}m / λ_rec=
                   {activeEvMetrics.wavelengthRec_m.toFixed(2)}m)
                 </span>
-                <span className="text-[#A1A1AA]">
+                <span className="text-[#A1A1AA] shrink-0">
                   DOPPLER SPAN:{' '}
                   <strong className="text-[#FAFAFA]">
                     Δf={activeEvMetrics.dopplerShiftSpan_hz.toFixed(1)} Hz
                   </strong>
                 </span>
-                <span className="text-[#A1A1AA]">
+                <span className="text-[#A1A1AA] shrink-0">
                   PROP RPM (2B/3B):{' '}
                   <strong className="text-[#FAFAFA]">
                     {activeEvMetrics.rpm2Blade.toFixed(0)} /{' '}
@@ -1232,7 +1242,7 @@ export const SpectrogramViewport: React.FC<SpectrogramViewportProps> = ({
           {activeEv && activeEvMetrics && (
             <div
               data-testid="source-classification-badge"
-              className="flex items-center gap-1.5"
+              className="flex items-center gap-1.5 shrink-0 ml-auto"
             >
               <span
                 className="w-1.5 h-1.5"

@@ -65,16 +65,19 @@ const PrecisionFaderControl: React.FC<PrecisionFaderProps> = ({
 }) => {
   const ratio = Math.max(0, Math.min(1, (value - min) / Math.max(1e-6, max - min)));
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1 min-w-0">
       <div className="relative h-7 bg-[#111111] border border-[#222222] px-2.5 flex items-center justify-between overflow-hidden">
         <div
           className="absolute inset-y-0 left-0 bg-[#1F1F22] pointer-events-none"
           style={{ width: `${(ratio * 100).toFixed(1)}%` }}
         />
-        <span className="relative z-10 text-[10px] uppercase tracking-[0.08em] text-[#A1A1AA] font-mono">
+        <span
+          className="relative z-10 text-[10px] uppercase tracking-[0.08em] text-[#A1A1AA] font-mono truncate mr-2 min-w-0"
+          title={label}
+        >
           {label}
         </span>
-        <span className="relative z-10 text-[11px] font-mono tabular-nums text-[#FAFAFA]">
+        <span className="relative z-10 text-[11px] font-mono tabular-nums text-[#FAFAFA] shrink-0 whitespace-nowrap">
           {displayValue}
         </span>
       </div>
@@ -86,7 +89,7 @@ const PrecisionFaderControl: React.FC<PrecisionFaderProps> = ({
         value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))}
         aria-label={ariaLabel}
-        className="w-full block cursor-ew-resize"
+        className="w-full block cursor-ew-resize focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white"
       />
     </div>
   );
@@ -135,6 +138,16 @@ export function App() {
   const [duration, setDuration] = useState<number>(0.0);
   const [uploadedVideoUrl, setUploadedVideoUrl] = useState<string | null>(null);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const activeObjectUrlRef = useRef<string | null>(null);
+
+  // Revoke active object URL on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (activeObjectUrlRef.current) {
+        URL.revokeObjectURL(activeObjectUrlRef.current);
+      }
+    };
+  }, []);
 
   const [selectedBasin, setSelectedBasin] = useState<BasinSummary | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
@@ -289,6 +302,10 @@ export function App() {
       audioElRef.current.pause();
       audioElRef.current.src = '';
     }
+    if (activeObjectUrlRef.current) {
+      URL.revokeObjectURL(activeObjectUrlRef.current);
+      activeObjectUrlRef.current = null;
+    }
     setUploadedVideoUrl(null);
     setUploadedFileName(null);
     setRawPcmBuffer(null);
@@ -299,8 +316,13 @@ export function App() {
   }, []);
 
   const handleFileUpload = useCallback(async (file: File) => {
+    if (activeObjectUrlRef.current) {
+      URL.revokeObjectURL(activeObjectUrlRef.current);
+      activeObjectUrlRef.current = null;
+    }
     setUploadedFileName(file.name);
     const url = URL.createObjectURL(file);
+    activeObjectUrlRef.current = url;
     if (
       file.type.startsWith('video/') ||
       /\.(mp4|webm|mov)$/i.test(file.name)
@@ -501,64 +523,249 @@ export function App() {
   const [isFetchingAdsb, setIsFetchingAdsb] = useState<boolean>(false);
   const [adsbStatusMsg, setAdsbStatusMsg] = useState<string | null>(null);
 
+  const handleLoadSampleScenarioFlights = () => {
+    const centerLat = (bounds.south + bounds.north) * 0.5;
+    const centerLon = (bounds.west + bounds.east) * 0.5;
+    const presets: ScenarioFlight[] = [
+      {
+        id: 'DEMO-C172',
+        callsign: 'N739UL',
+        aircraft: 'C172',
+        aircraft_name: 'Cessna 172 Skyhawk',
+        heading_deg: 320.0,
+        speed_ms: 58.0,
+        speed_kts: 112.7,
+        alt_m: 1250,
+        bpf_nominal_hz: 85.0,
+        is_target: true,
+        cpa: {
+          lat: Number((centerLat - 0.012).toFixed(4)),
+          lon: Number((centerLon + 0.018).toFixed(4)),
+          time_s: 24.5,
+          slant_m: 1350,
+        },
+        waypoints: [],
+      },
+      {
+        id: 'DEMO-SR22',
+        callsign: 'N882SR',
+        aircraft: 'SR22',
+        aircraft_name: 'Cirrus SR22 G6',
+        heading_deg: 115.0,
+        speed_ms: 86.0,
+        speed_kts: 167.2,
+        alt_m: 1850,
+        bpf_nominal_hz: 115.0,
+        is_target: true,
+        cpa: {
+          lat: Number((centerLat + 0.021).toFixed(4)),
+          lon: Number((centerLon - 0.014).toFixed(4)),
+          time_s: 38.0,
+          slant_m: 1920,
+        },
+        waypoints: [],
+      },
+      {
+        id: 'DEMO-DA40',
+        callsign: 'N420DA',
+        aircraft: 'DA40',
+        aircraft_name: 'Diamond DA40 Star',
+        heading_deg: 205.0,
+        speed_ms: 68.0,
+        speed_kts: 132.2,
+        alt_m: 1400,
+        bpf_nominal_hz: 90.0,
+        is_target: false,
+        cpa: {
+          lat: Number((centerLat + 0.035).toFixed(4)),
+          lon: Number((centerLon + 0.028).toFixed(4)),
+          time_s: 55.0,
+          slant_m: 1550,
+        },
+        waypoints: [],
+      },
+      {
+        id: 'DEMO-C182',
+        callsign: 'N5182B',
+        aircraft: 'C182',
+        aircraft_name: 'Cessna 182 Skylane',
+        heading_deg: 45.0,
+        speed_ms: 74.0,
+        speed_kts: 143.8,
+        alt_m: 1600,
+        bpf_nominal_hz: 88.0,
+        is_target: false,
+        cpa: {
+          lat: Number((centerLat - 0.028).toFixed(4)),
+          lon: Number((centerLon - 0.032).toFixed(4)),
+          time_s: 72.0,
+          slant_m: 1720,
+        },
+        waypoints: [],
+      },
+    ];
+    setFlights(presets);
+    setAdsbStatusMsg(`Loaded ${presets.length} benchmark scenario aircraft.`);
+  };
+
   const handleFetchLiveOpenSky = async () => {
     setIsFetchingAdsb(true);
     setAdsbStatusMsg(null);
+    const centerLat = (bounds.south + bounds.north) * 0.5;
+    const centerLon = (bounds.west + bounds.east) * 0.5;
+    const radiusNm = Math.min(
+      50,
+      Math.max(
+        15,
+        Math.ceil(
+          Math.max(bounds.north - bounds.south, bounds.east - bounds.west) * 60 * 0.75
+        )
+      )
+    );
+
+    // 1. Try adsb.lol (community open network, free, high limit)
     try {
-      const url = `https://opensky-network.org/api/states/all?lamin=${bounds.south}&lomin=${bounds.west}&lamax=${bounds.north}&lomax=${bounds.east}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      const states: unknown[][] = Array.isArray(data?.states) ? data.states : [];
-      const airborne = states.filter(
-        (s) =>
-          s[5] !== null &&
-          s[6] !== null &&
-          !s[8] &&
-          typeof s[9] === 'number' &&
-          s[9] > 25 &&
-          s[9] < 165
-      );
+      const lolUrls = [
+        `/api/adsb-lol/v2/point/${centerLat.toFixed(4)}/${centerLon.toFixed(4)}/${radiusNm}`,
+        `https://api.adsb.lol/v2/point/${centerLat.toFixed(4)}/${centerLon.toFixed(4)}/${radiusNm}`,
+      ];
 
-      if (airborne.length === 0) {
-        setAdsbStatusMsg('No airborne propeller-speed aircraft in bounds right now.');
-      } else {
-        const imported: ScenarioFlight[] = airborne.slice(0, 12).map((s, idx) => {
-          const icao24 = String(s[0] || `OS${idx}`);
-          const callsign = String(s[1] || icao24).trim() || icao24;
-          const lon = Number(s[5]);
-          const lat = Number(s[6]);
-          const baroAlt = typeof s[7] === 'number' ? s[7] : 1500;
-          const velocityMs = typeof s[9] === 'number' ? s[9] : 95;
-          const headingDeg = typeof s[10] === 'number' ? s[10] : 90;
+      for (const u of lolUrls) {
+        try {
+          const res = await fetch(u);
+          if (!res.ok) continue;
+          const data = await res.json();
+          interface AdsbLolAircraft {
+            hex?: string;
+            flight?: string;
+            r?: string;
+            t?: string;
+            lat?: number;
+            lon?: number;
+            alt_baro?: number | string;
+            gs?: number;
+            track?: number;
+          }
+          const acList: AdsbLolAircraft[] = Array.isArray(data?.ac) ? data.ac : [];
+          const airborne = acList.filter(
+            (a) =>
+              typeof a.lat === 'number' &&
+              typeof a.lon === 'number' &&
+              typeof a.alt_baro === 'number' &&
+              typeof a.gs === 'number' &&
+              a.gs > 25 &&
+              a.gs < 185
+          );
 
-          return {
-            id: `${icao24}-${idx}`,
-            callsign,
-            aircraft: velocityMs < 105 ? 'C172' : 'SR22',
-            aircraft_name: 'OpenSky Live ADS-B',
-            heading_deg: Number(headingDeg.toFixed(1)),
-            speed_ms: Number(velocityMs.toFixed(1)),
-            speed_kts: Number((velocityMs * 1.94384).toFixed(1)),
-            alt_m: Number(baroAlt.toFixed(0)),
-            bpf_nominal_hz: velocityMs < 105 ? 85 : 115,
-            is_target: idx < 2,
-            cpa: {
-              lat: Number(lat.toFixed(4)),
-              lon: Number(lon.toFixed(4)),
-              time_s: 20 + idx * 15,
-              slant_m: Number(Math.max(400, baroAlt).toFixed(0)),
-            },
-            waypoints: [],
-          };
-        });
-        setFlights(imported);
-        setAdsbStatusMsg(`Loaded ${imported.length} live aircraft from OpenSky.`);
+          if (airborne.length > 0) {
+            const imported: ScenarioFlight[] = airborne.slice(0, 16).map((a, idx) => {
+              const hex = String(a.hex || `AL${idx}`).toUpperCase();
+              const callsign = String(a.flight || a.r || hex).trim() || hex;
+              const lat = Number(a.lat);
+              const lon = Number(a.lon);
+              const baroAltM = typeof a.alt_baro === 'number' ? a.alt_baro * 0.3048 : 1500;
+              const velocityMs = typeof a.gs === 'number' ? a.gs * 0.514444 : 85;
+              const headingDeg = typeof a.track === 'number' ? a.track : 90;
+              const typeCode = String(a.t || (velocityMs < 95 ? 'C172' : 'SR22')).toUpperCase();
+
+              return {
+                id: `${hex}-${idx}`,
+                callsign,
+                aircraft: typeCode,
+                aircraft_name: `${callsign} (${typeCode})`,
+                heading_deg: Number(headingDeg.toFixed(1)),
+                speed_ms: Number(velocityMs.toFixed(1)),
+                speed_kts: Number((velocityMs * 1.94384).toFixed(1)),
+                alt_m: Number(baroAltM.toFixed(0)),
+                bpf_nominal_hz: velocityMs < 95 ? 85 : 115,
+                is_target: idx < 2,
+                cpa: {
+                  lat: Number(lat.toFixed(4)),
+                  lon: Number(lon.toFixed(4)),
+                  time_s: 20 + idx * 12,
+                  slant_m: Number(Math.max(400, baroAltM).toFixed(0)),
+                },
+                waypoints: [],
+              };
+            });
+            setFlights(imported);
+            setAdsbStatusMsg(`Loaded ${imported.length} live aircraft from ADSB.lol.`);
+            setIsFetchingAdsb(false);
+            return;
+          }
+        } catch {
+          // Continue to next endpoint or fallback
+        }
       }
     } catch {
-      setAdsbStatusMsg('OpenSky rate-limited or unreachable; import JSON/CSV or add manually.');
+      // Continue to OpenSky fallback
+    }
+
+    // 2. Fallback to OpenSky Network via proxy / direct
+    try {
+      const openSkyUrls = [
+        `/api/opensky/states/all?lamin=${bounds.south}&lomin=${bounds.west}&lamax=${bounds.north}&lomax=${bounds.east}`,
+        `https://opensky-network.org/api/states/all?lamin=${bounds.south}&lomin=${bounds.west}&lamax=${bounds.north}&lomax=${bounds.east}`,
+      ];
+
+      for (const u of openSkyUrls) {
+        try {
+          const res = await fetch(u);
+          if (!res.ok) continue;
+          const data = await res.json();
+          const states: unknown[][] = Array.isArray(data?.states) ? data.states : [];
+          const airborne = states.filter(
+            (s) =>
+              s[5] !== null &&
+              s[6] !== null &&
+              !s[8] &&
+              typeof s[9] === 'number' &&
+              s[9] > 25 &&
+              s[9] < 165
+          );
+
+          if (airborne.length > 0) {
+            const imported: ScenarioFlight[] = airborne.slice(0, 12).map((s, idx) => {
+              const icao24 = String(s[0] || `OS${idx}`).toUpperCase();
+              const callsign = String(s[1] || icao24).trim() || icao24;
+              const lon = Number(s[5]);
+              const lat = Number(s[6]);
+              const baroAlt = typeof s[7] === 'number' ? s[7] : 1500;
+              const velocityMs = typeof s[9] === 'number' ? s[9] : 95;
+              const headingDeg = typeof s[10] === 'number' ? s[10] : 90;
+
+              return {
+                id: `${icao24}-${idx}`,
+                callsign,
+                aircraft: velocityMs < 105 ? 'C172' : 'SR22',
+                aircraft_name: 'OpenSky Live ADS-B',
+                heading_deg: Number(headingDeg.toFixed(1)),
+                speed_ms: Number(velocityMs.toFixed(1)),
+                speed_kts: Number((velocityMs * 1.94384).toFixed(1)),
+                alt_m: Number(baroAlt.toFixed(0)),
+                bpf_nominal_hz: velocityMs < 105 ? 85 : 115,
+                is_target: idx < 2,
+                cpa: {
+                  lat: Number(lat.toFixed(4)),
+                  lon: Number(lon.toFixed(4)),
+                  time_s: 20 + idx * 15,
+                  slant_m: Number(Math.max(400, baroAlt).toFixed(0)),
+                },
+                waypoints: [],
+              };
+            });
+            setFlights(imported);
+            setAdsbStatusMsg(`Loaded ${imported.length} live aircraft from OpenSky.`);
+            setIsFetchingAdsb(false);
+            return;
+          }
+        } catch {
+          // Continue to next URL
+        }
+      }
+      setAdsbStatusMsg('No airborne propeller-speed aircraft found in bounds. Use "Sample Scenario" or try a wider region.');
+    } catch {
+      setAdsbStatusMsg('Live feeds unavailable (CORS/Rate-limit). Use "Sample Scenario" or import JSON/CSV.');
     } finally {
       setIsFetchingAdsb(false);
     }
@@ -683,65 +890,66 @@ export function App() {
   return (
     <div className="flex flex-col h-screen w-screen bg-[#000000] text-[#FAFAFA] select-none overflow-hidden">
       {/* Top Instrument Header Bar */}
-      <header className="h-11 px-4 bg-[#0A0A0A] border-b border-[#1F1F1F] flex items-center justify-between gap-8 shrink-0">
-        <a
-          href="#spectrogram"
-          onClick={(e) => {
-            e.preventDefault();
-            setActiveTab('spectrogram');
-          }}
-          className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-[#FAFAFA] flex items-center gap-2 whitespace-nowrap shrink-0"
+      <header className="h-11 px-4 bg-[#0A0A0A] border-b border-[#1F1F1F] flex items-center justify-between gap-4 md:gap-8 shrink-0 overflow-x-auto min-w-0">
+        <button
+          type="button"
+          onClick={() => setActiveTab('spectrogram')}
+          className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-[#FAFAFA] flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer bg-transparent border-none p-0"
         >
-          <span className="w-2 h-2 bg-[#10B981] inline-block" />
+          <span className="w-2 h-2 bg-[#10B981] inline-block shrink-0" />
           <span>SKYPRINT</span>
-        </a>
+        </button>
 
         <nav
+          role="tablist"
           aria-label="Workspace Tabs"
-          className="flex items-center h-full gap-6 text-xs font-medium text-[#A1A1AA]"
+          className="flex items-center h-full gap-4 md:gap-6 text-xs font-medium text-[#A1A1AA] overflow-x-auto min-w-0"
         >
-          <a
-            href="#spectrogram"
-            onClick={(e) => {
-              e.preventDefault();
-              setActiveTab('spectrogram');
-            }}
-            className={`h-full flex items-center transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+          <button
+            type="button"
+            role="tab"
+            id="tab-spectrogram"
+            aria-selected={activeTab === 'spectrogram'}
+            aria-controls="tabpanel-spectrogram"
+            onClick={() => setActiveTab('spectrogram')}
+            className={`h-full flex items-center transition-colors whitespace-nowrap shrink-0 border-b-2 cursor-pointer ${
               activeTab === 'spectrogram'
                 ? 'text-[#FAFAFA] border-[#FFFFFF]'
                 : 'border-transparent hover:text-[#FAFAFA]'
             }`}
           >
             Spectrogram
-          </a>
-          <a
-            href="#geolocation"
-            onClick={(e) => {
-              e.preventDefault();
-              setActiveTab('geolocation');
-            }}
-            className={`h-full flex items-center transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="tab-geolocation"
+            aria-selected={activeTab === 'geolocation'}
+            aria-controls="tabpanel-geolocation"
+            onClick={() => setActiveTab('geolocation')}
+            className={`h-full flex items-center transition-colors whitespace-nowrap shrink-0 border-b-2 cursor-pointer ${
               activeTab === 'geolocation'
                 ? 'text-[#FAFAFA] border-[#FFFFFF]'
                 : 'border-transparent hover:text-[#FAFAFA]'
             }`}
           >
             Geolocation
-          </a>
-          <a
-            href="#flights"
-            onClick={(e) => {
-              e.preventDefault();
-              setActiveTab('flights');
-            }}
-            className={`h-full flex items-center transition-colors whitespace-nowrap shrink-0 border-b-2 font-mono tabular-nums ${
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="tab-flights"
+            aria-selected={activeTab === 'flights'}
+            aria-controls="tabpanel-flights"
+            onClick={() => setActiveTab('flights')}
+            className={`h-full flex items-center transition-colors whitespace-nowrap shrink-0 border-b-2 font-mono tabular-nums cursor-pointer ${
               activeTab === 'flights'
                 ? 'text-[#FAFAFA] border-[#FFFFFF]'
                 : 'border-transparent hover:text-[#FAFAFA]'
             }`}
           >
             Flight Tracks ({flights.length})
-          </a>
+          </button>
         </nav>
 
         <div className="flex items-center gap-2 shrink-0">
@@ -759,7 +967,12 @@ export function App() {
 
       {/* TAB 1: SPECTROGRAM & MEDIA */}
       {activeTab === 'spectrogram' && (
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[320px_1fr] min-h-0 overflow-hidden">
+        <div
+          role="tabpanel"
+          id="tabpanel-spectrogram"
+          aria-labelledby="tab-spectrogram"
+          className="flex-1 grid grid-cols-1 lg:grid-cols-[320px_1fr] min-h-0 overflow-hidden"
+        >
           {/* Unboxed Full-Width Hairline Sidebar */}
           <aside className="bg-[#0A0A0A] border-r border-[#1F1F1F] flex flex-col min-h-0 overflow-y-auto p-0">
             <ForensicVideoMonitor
@@ -925,40 +1138,46 @@ export function App() {
                       {/* Wavelength & Kinematic Telemetry Readout Box */}
                       <div
                         data-testid="curve-wavelength-telemetry"
-                        className="border border-[#222222] bg-[#111111] divide-y divide-[#1F1F1F] text-[10.5px] font-mono tabular-nums"
+                        className="border border-[#222222] bg-[#111111] divide-y divide-[#1F1F1F] text-[10.5px] font-mono tabular-nums min-w-0"
                       >
-                        <div className="flex justify-between px-2.5 py-1">
-                          <span className="text-[#A1A1AA]">WAVELENGTH λ₀</span>
-                          <span className="text-[#10B981]">
+                        <div className="flex items-center justify-between gap-2 px-2.5 py-1">
+                          <span className="text-[#A1A1AA] shrink-0">WAVELENGTH λ₀</span>
+                          <span className="text-[#10B981] font-mono tabular-nums text-right truncate">
                             {activeEvMetrics.wavelength0_m.toFixed(3)} m
                           </span>
                         </div>
-                        <div className="flex justify-between px-2.5 py-1">
-                          <span className="text-[#A1A1AA]">
+                        <div className="flex items-center justify-between gap-2 px-2.5 py-1">
+                          <span className="text-[#A1A1AA] shrink-0">
                             λ_APP / λ_REC
                           </span>
-                          <span className="text-[#FAFAFA]">
+                          <span className="text-[#FAFAFA] font-mono tabular-nums text-right truncate">
                             {activeEvMetrics.wavelengthApp_m.toFixed(2)} m /{' '}
                             {activeEvMetrics.wavelengthRec_m.toFixed(2)} m
                           </span>
                         </div>
-                        <div className="flex justify-between px-2.5 py-1">
-                          <span className="text-[#A1A1AA]">
+                        <div className="flex items-center justify-between gap-2 px-2.5 py-1">
+                          <span className="text-[#A1A1AA] shrink-0">
                             MAX SLOPE |df/dt|
                           </span>
-                          <span className="text-[#FAFAFA]">
+                          <span className="text-[#FAFAFA] font-mono tabular-nums text-right truncate">
                             {activeEvMetrics.maxInflectionSlope_hz_s.toFixed(2)}{' '}
                             Hz/s
                           </span>
                         </div>
-                        <div className="flex justify-between px-2.5 py-1">
-                          <span className="text-[#A1A1AA]">SOURCE FILTER</span>
+                        <div className="flex items-center justify-between gap-2 px-2.5 py-1">
+                          <span className="text-[#A1A1AA] shrink-0">SOURCE FILTER</span>
                           <span
-                            className={
+                            className={`text-right truncate font-medium ${
                               activeEvMetrics.sourceClass === 'aircraft' &&
                               !activeEv.rejectedAsTraffic
                                 ? 'text-[#10B981]'
                                 : 'text-[#F43F5E]'
+                            }`}
+                            title={
+                              activeEvMetrics.sourceClass === 'aircraft' &&
+                              !activeEv.rejectedAsTraffic
+                                ? 'AIRCRAFT (KEEP)'
+                                : 'CAR / TRAFFIC (REJECTED)'
                             }
                           >
                             {activeEvMetrics.sourceClass === 'aircraft' &&
@@ -1133,7 +1352,12 @@ export function App() {
 
       {/* TAB 2: GEOLOCATION MAP */}
       {activeTab === 'geolocation' && (
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[320px_1fr] min-h-0 overflow-hidden">
+        <div
+          role="tabpanel"
+          id="tabpanel-geolocation"
+          aria-labelledby="tab-geolocation"
+          className="flex-1 grid grid-cols-1 lg:grid-cols-[320px_1fr] min-h-0 overflow-hidden"
+        >
           {/* Unboxed Full-Width Hairline Sidebar */}
           <aside className="bg-[#0A0A0A] border-r border-[#1F1F1F] flex flex-col min-h-0 overflow-y-auto p-0">
             {/* ESTIMATED FIX SECTION */}
@@ -1182,29 +1406,29 @@ export function App() {
                   ADD DOPPLER CURVES + ADS-B TRACKS TO SOLVE FIX
                 </p>
               ) : (
-                <div className="flex flex-col divide-y divide-[#1F1F1F] border border-[#222222] bg-[#111111] text-[11px] font-mono tabular-nums">
-                  <div className="flex justify-between px-2.5 py-1.5">
-                    <span className="text-[#A1A1AA]">COORDINATES</span>
-                    <span className="text-[#FAFAFA]">
+                <div className="flex flex-col divide-y divide-[#1F1F1F] border border-[#222222] bg-[#111111] text-[11px] font-mono tabular-nums min-w-0">
+                  <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
+                    <span className="text-[#A1A1AA] shrink-0">COORDINATES</span>
+                    <span className="text-[#FAFAFA] text-right truncate">
                       {inversionResult.fix.lat.toFixed(4)}°,{' '}
                       {inversionResult.fix.lon.toFixed(4)}°
                     </span>
                   </div>
-                  <div className="flex justify-between px-2.5 py-1.5">
-                    <span className="text-[#A1A1AA]">95% RADIUS</span>
-                    <span className="text-[#FAFAFA]">
+                  <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
+                    <span className="text-[#A1A1AA] shrink-0">95% RADIUS</span>
+                    <span className="text-[#FAFAFA] text-right truncate">
                       ±{inversionResult.radius_m.toFixed(0)} m
                     </span>
                   </div>
-                  <div className="flex justify-between px-2.5 py-1.5">
-                    <span className="text-[#A1A1AA]">100M HEATMAP GRID</span>
-                    <span className="text-[#EF4444]">
+                  <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
+                    <span className="text-[#A1A1AA] shrink-0">100M HEATMAP GRID</span>
+                    <span className="text-[#EF4444] text-right truncate">
                       {inversionResult.heatmapGrid.length} DOTS (100m)
                     </span>
                   </div>
-                  <div className="flex justify-between px-2.5 py-1.5">
-                    <span className="text-[#A1A1AA]">SCORE</span>
-                    <span className="text-[#10B981]">
+                  <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
+                    <span className="text-[#A1A1AA] shrink-0">SCORE</span>
+                    <span className="text-[#10B981] text-right truncate">
                       {inversionResult.score.toFixed(2)}
                     </span>
                   </div>
@@ -1407,20 +1631,25 @@ export function App() {
 
       {/* TAB 3: FULL-BLEED ADS-B FLIGHT TRACKS WORKSTATION TABLE */}
       {activeTab === 'flights' && (
-        <main className="flex-1 flex flex-col min-h-0 bg-[#000000] overflow-hidden">
-          <div className="h-10 px-4 bg-[#0A0A0A] border-b border-[#1F1F1F] flex items-center justify-between gap-3 shrink-0">
-            <div className="flex items-center gap-3">
-              <span className="text-[10px] uppercase tracking-[0.1em] text-[#737373] font-semibold">
+        <main
+          role="tabpanel"
+          id="tabpanel-flights"
+          aria-labelledby="tab-flights"
+          className="flex-1 flex flex-col min-h-0 bg-[#000000] overflow-hidden"
+        >
+          <div className="h-10 px-4 bg-[#0A0A0A] border-b border-[#1F1F1F] flex items-center justify-between gap-3 shrink-0 overflow-x-auto min-w-0">
+            <div className="flex items-center gap-3 min-w-0 flex-1 mr-2">
+              <span className="text-[10px] uppercase tracking-[0.1em] text-[#737373] font-semibold whitespace-nowrap shrink-0">
                 ADS-B TELEMETRY LOG
               </span>
               {adsbStatusMsg && (
-                <span className="text-[11px] font-mono text-[#A1A1AA]">
+                <span className="text-[11px] font-mono text-[#A1A1AA] truncate min-w-0" title={adsbStatusMsg}>
                   {adsbStatusMsg}
                 </span>
               )}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               <div className="inline-flex items-center border border-[#262626] divide-x divide-[#262626]">
                 <button
                   type="button"
@@ -1465,9 +1694,20 @@ export function App() {
                   type="button"
                   onClick={handleFetchLiveOpenSky}
                   disabled={isFetchingAdsb}
+                  title="Query live airborne flights via ADSB.lol with OpenSky fallback"
                   className="h-7 px-2.5 text-[11px] font-mono bg-[#111111] hover:bg-[#161616] disabled:opacity-50 text-[#FAFAFA] rounded-none flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
-                  {isFetchingAdsb ? 'Fetching...' : 'Fetch Live OpenSky'}
+                  {isFetchingAdsb ? 'Fetching...' : 'Fetch Live ADS-B'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleLoadSampleScenarioFlights}
+                  title="Load 4 realistic benchmark propeller aircraft (C172, SR22, DA40, C182) in bounds"
+                  className="h-7 px-2.5 text-[11px] font-mono bg-[#111111] hover:bg-[#161616] text-[#A1A1AA] hover:text-[#FAFAFA] rounded-none flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Sparkles className="w-3 h-3 text-[#10B981]" />
+                  Sample Scenario
                 </button>
 
                 <button

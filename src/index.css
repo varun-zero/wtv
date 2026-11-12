@@ -13,7 +13,7 @@
 
     --text-primary: #fafafa;     /* Primary values & active tabs */
     --text-secondary: #a1a1aa;   /* Control labels */
-    --text-muted: #737373;       /* Section headers, units, axis ticks */
+    --text-muted: #8e8e93;       /* Section headers, units, axis ticks (WCAG AA compliant > 4.5:1) */
 
     --accent-primary: #ffffff;   /* Primary CTA & active slider thumb */
     --signal-nom: #10b981;       /* Telemetry lock / Whitened */
@@ -50,6 +50,17 @@ input[type="range"] {
   background: #262626;
   border-radius: 0;
   outline: none;
+}
+
+input[type="range"]:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 3px;
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 1.5px solid var(--accent-primary);
+  outline-offset: 1px;
 }
 
 input[type="range"]::-webkit-slider-thumb {
@@ -90,7 +101,7 @@ input[type="range"]::-moz-range-thumb {
 
 .leaflet-control-attribution {
   background: rgba(10, 10, 10, 0.9) !important;
-  color: #52525b !important;
+  color: #8e8e93 !important;
   font-size: 9px !important;
   border-top: 1px solid #1f1f1f;
   border-left: 1px solid #1f1f1f;
@@ -129,4 +140,16 @@ input[type="range"]::-moz-range-thumb {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #3f3f46;
+}
+
+/* Reduced Motion Preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

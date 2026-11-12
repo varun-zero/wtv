@@ -68,6 +68,9 @@
       justify-content: space-between;
       padding: 0 16px;
       z-index: 10;
+      overflow-x: auto;
+      gap: 12px;
+      min-width: 0;
     }
 
     .brand {
@@ -266,11 +269,13 @@
       padding: 4px 0;
       font-size: 12px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      gap: 8px;
+      min-width: 0;
     }
 
     .telemetry-row:last-child { border-bottom: none; }
-    .telemetry-key { color: var(--text-muted); font-size: 11px; }
-    .telemetry-val { font-family: var(--font-mono); color: var(--text-main); font-size: 12px; }
+    .telemetry-key { color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
+    .telemetry-val { font-family: var(--font-mono); color: var(--text-main); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 
     /* Audio Player Widget */
     .audio-player-box {
@@ -351,6 +356,9 @@
       justify-content: space-between;
       padding: 0 12px;
       z-index: 5;
+      overflow-x: auto;
+      gap: 8px;
+      min-width: 0;
     }
 
     .tab-group {

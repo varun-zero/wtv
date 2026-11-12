@@ -42,8 +42,29 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
   onToggleMute,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const dimsRef = useRef<{ w: number; h: number }>({ w: 240, h: 130 });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Measure stage dimensions via ResizeObserver to avoid layout thrashing during playback
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const updateDims = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        dimsRef.current = {
+          w: Math.max(240, Math.floor(rect.width)),
+          h: Math.max(130, Math.floor(rect.height)),
+        };
+      }
+    };
+    updateDims();
+    const ro = new ResizeObserver(updateDims);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Sync uploaded <video> element with audio playback state
   useEffect(() => {
@@ -68,15 +89,12 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    const w = Math.max(240, rect.width);
-    const h = Math.max(130, rect.height);
-    if (
-      canvas.width !== Math.round(w * dpr) ||
-      canvas.height !== Math.round(h * dpr)
-    ) {
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
+    const { w, h } = dimsRef.current;
+    const targetW = Math.round(w * dpr);
+    const targetH = Math.round(h * dpr);
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
     }
 
     ctx.save();
@@ -160,6 +178,7 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
             <button
               type="button"
               onClick={onClearMedia}
+              aria-label="Clear loaded media"
               className="h-6 px-2 text-[11px] font-mono text-[#A1A1AA] hover:text-[#F43F5E] bg-[#111111] hover:bg-[#161616] rounded-none flex items-center gap-1 cursor-pointer transition-colors"
               title="Clear loaded file"
             >
@@ -170,6 +189,7 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
+            aria-label="Upload media file"
             className="h-6 px-2.5 text-[11px] font-medium bg-[#111111] hover:bg-[#161616] text-[#FAFAFA] rounded-none flex items-center gap-1.5 transition-colors cursor-pointer"
           >
             <Upload className="w-3 h-3 text-[#FAFAFA]" />
@@ -188,6 +208,7 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
 
       {/* Video / Waveform / Dropzone Stage */}
       <div
+        ref={stageRef}
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
         className="relative w-full h-36 bg-[#000000] border border-[#262626] rounded-none overflow-hidden flex items-center justify-center"
@@ -210,6 +231,7 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
+            aria-label="Click or drop video or audio file to upload"
             className="w-full h-full flex flex-col items-center justify-center gap-1.5 text-[#A1A1AA] hover:text-[#FAFAFA] hover:bg-[#0A0A0A] transition-colors cursor-pointer rounded-none"
           >
             <Upload className="w-4 h-4 text-[#A1A1AA]" />
@@ -283,12 +305,12 @@ export const ForensicVideoMonitor: React.FC<ForensicVideoMonitorProps> = ({
       </div>
 
       {uploadedFileName && (
-        <div className="mt-2 pt-1.5 border-t border-[#1F1F1F] flex items-center justify-between text-[11px] text-[#A1A1AA] font-mono tabular-nums">
-          <span className="truncate max-w-[180px] text-[#FAFAFA]">
-            <Film className="w-3 h-3 inline mr-1.5 text-[#737373]" />
+        <div className="mt-2 pt-1.5 border-t border-[#1F1F1F] flex items-center justify-between text-[11px] text-[#A1A1AA] font-mono tabular-nums gap-2 min-w-0">
+          <span className="truncate flex-1 min-w-0 mr-2 text-[#FAFAFA]" title={uploadedFileName}>
+            <Film className="w-3 h-3 inline mr-1.5 text-[#737373] shrink-0" />
             {uploadedFileName}
           </span>
-          <span className="text-[#737373]">{sampleRate} Hz</span>
+          <span className="text-[#737373] shrink-0 whitespace-nowrap">{sampleRate} Hz</span>
         </div>
       )}
     </div>
